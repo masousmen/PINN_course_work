@@ -48,6 +48,15 @@ def get_dtype(type_name):
 def heat_1d_solution(x, t, alpha):
     return torch.exp(-torch.pi * torch.pi * alpha * t) * torch.sin(torch.pi * x)
 
+
+def helmholtz_1d_solution(x, m):
+    return torch.sin(m * torch.pi * x)
+
+
+def helmholtz_1d_force(x, m, lambda_val):
+    return (lambda_val - (m * torch.pi) ** 2) * torch.sin(m * torch.pi * x)
+
+
 def burgers_1d_initial(x):
     return -torch.sin(torch.pi * x)
 
@@ -148,6 +157,20 @@ def make_points(n_collocation, n_ic, n_bc, task):
         }
         return points
 
+    if task == 'helmholtz1d':
+        x_pde = torch.rand(n_collocation, 1)
+        x_pde.requires_grad_(True)
+
+        x0 = torch.zeros(n_bc, 1)
+        x1 = torch.ones(n_bc, 1)
+
+        points = {
+            "x_pde": x_pde,
+            "x0": x0,
+            "x1": x1,
+        }
+        return points
+
     raise ValueError("Unsupported task")
 
 
@@ -187,7 +210,6 @@ def pinn_loss(model, points, alpha, task):
         u_xx = torch.autograd.grad(u_x, x_pde, grad_outputs=torch.ones_like(u_x), create_graph=True, retain_graph=True)[0]
         res = u_t + u * u_x - alpha * u_xx
         pde_loss = torch.mean(res ** 2)
-
         u_ic = model(points["x_ic"], points["t_ic"])
         u_ic_true = burgers_1d_initial(points["x_ic"])
         ic_loss = torch.mean((u_ic - u_ic_true) ** 2)
@@ -199,32 +221,66 @@ def pinn_loss(model, points, alpha, task):
         loss = pde_loss + ic_loss + bc_loss
         return loss, pde_loss, ic_loss, bc_loss
 
+    if task == 'helmholtz1d':
+        m = alpha["m"]
+        lambda_val = alpha["lambda_val"]
+
+        x_pde = points['x_pde']
+        u = model(x_pde)
+        ones = torch.ones_like(u)
+        u_x = torch.autograd.grad(u, x_pde, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
+        u_xx = torch.autograd.grad(u_x, x_pde, grad_outputs=torch.ones_like(u_x), create_graph=True, retain_graph=True)[0]
+
+        f = helmholtz_1d_force(x_pde, m, lambda_val)
+        scale = abs(lambda_val - (m * torch.pi) ** 2)
+        res = (u_xx + lambda_val * u - f) / scale
+        pde_loss = torch.mean(res ** 2)
+
+        u0 = model(points["x0"])
+        u1 = model(points["x1"])
+        bc_loss = torch.mean(u0 ** 2) + torch.mean(u1 ** 2)
+        ic_loss = pde_loss * 0
+
+        loss = pde_loss + bc_loss
+        return loss, pde_loss, ic_loss, bc_loss
+
     raise ValueError("Unsupported task")
 
 
 def l2_error(model, alpha, task):
-    n = 100
+    if task == 'helmholtz1d':
+        n = max(1000, int(alpha["m"]) * 50)
+    else:
+        n = 100
+
     if task == 'heat1d':
         x = torch.linspace(0, 1, n)
     elif task == 'burgers1d':
         x = torch.linspace(-1, 1, n)
+    elif task == 'helmholtz1d':
+        x = torch.linspace(0, 1, n)
     else:
         raise ValueError("Unsupported task")
 
-    t = torch.linspace(0, 1, n)
-    xx, tt = torch.meshgrid(x, t, indexing="ij")
-    xv = xx.reshape(-1, 1)
-    tv = tt.reshape(-1, 1)
     model.eval()
     with torch.no_grad():
-        pred = model(xv, tv)
-        if task == 'heat1d':
-            true = heat_1d_solution(xv, tv, alpha)
-        elif task == 'burgers1d':
-            ref_x, ref_t, vals = burgers_1d_reference(n, alpha)
-            true = torch.tensor(vals.reshape(-1, 1), dtype=pred.dtype, device=pred.device)
+        if task == 'helmholtz1d':
+            xv = x.reshape(-1, 1)
+            pred = model(xv)
+            true = helmholtz_1d_solution(xv, alpha["m"])
         else:
-            raise ValueError("Unsupported task")
+            t = torch.linspace(0, 1, n)
+            xx, tt = torch.meshgrid(x, t, indexing="ij")
+            xv = xx.reshape(-1, 1)
+            tv = tt.reshape(-1, 1)
+            pred = model(xv, tv)
+            if task == 'heat1d':
+                true = heat_1d_solution(xv, tv, alpha)
+            elif task == 'burgers1d':
+                ref_x, ref_t, vals = burgers_1d_reference(n, alpha)
+                true = torch.tensor(vals.reshape(-1, 1), dtype=pred.dtype, device=pred.device)
+            else:
+                raise ValueError("Unsupported task")
         err = torch.sqrt(torch.mean((pred - true) ** 2)) / torch.sqrt(torch.mean(true ** 2))
     model.train()
     return float(err.detach().cpu())
@@ -235,6 +291,8 @@ def get_input_dim(task):
         return 2
     if task == 'burgers1d':
         return 2
+    if task == 'helmholtz1d':
+        return 1
     raise ValueError("Unsupported task")
 
 
@@ -265,10 +323,16 @@ def run_experiment(config):
     num_layers = config.get('num_layers', 4)
     if task_name == 'burgers1d':
         alpha = config.get('nu', config.get('alpha', 0.01 / np.pi))
+    elif task_name == 'helmholtz1d':
+        alpha = {
+            "m": config.get('m', 1),
+            "lambda_val": config.get('lambda_val', 1.0),
+        }
     else:
         alpha = config.get('alpha', 0.1)
 
-    points = make_points(config['n_collocation'], config['n_ic'], config['n_bc'], task_name)
+    n_ic = config.get('n_ic', 0)
+    points = make_points(config['n_collocation'], n_ic, config['n_bc'], task_name)
     model = PINN(input_dim=input_dim, hid_size=hid_size, num_layers=num_layers).to(device)
 
     history = []
@@ -307,7 +371,14 @@ def run_experiment(config):
     lbfgs_steps = config.get('lbfgs_steps', 300)
 
     if use_lbfgs:
-        optimizer = torch.optim.LBFGS(model.parameters(), lr=1.0, max_iter=1, history_size=50)
+        optimizer = torch.optim.LBFGS(
+            model.parameters(),
+            lr=1.0,
+            max_iter=1,
+            history_size=config.get('lbfgs_history_size', 50),
+            tolerance_grad=config.get('lbfgs_tolerance_grad', 1e-7),
+            tolerance_change=config.get('lbfgs_tolerance_change', 1e-9),
+        )
 
         for i in range(1, lbfgs_steps + 1):
             def closure():
@@ -338,7 +409,7 @@ def run_experiment(config):
         "hid_size": hid_size,
         "num_layers": num_layers,
         "n_collocation": config['n_collocation'],
-        "n_ic": config['n_ic'],
+        "n_ic": n_ic,
         "n_bc": config['n_bc'],
         "adam_steps": adam_steps,
         "lbfgs_steps": lbfgs_steps,
@@ -349,6 +420,9 @@ def run_experiment(config):
     }
     if task_name == 'burgers1d':
         summary["nu"] = alpha
+    if task_name == 'helmholtz1d':
+        summary["m"] = alpha["m"]
+        summary["lambda_val"] = alpha["lambda_val"]
 
     with open(log_dir / "summary.json", 'w') as file:
         json.dump(summary, file, indent=2)
@@ -371,17 +445,26 @@ def run_experiment(config):
         x = torch.linspace(0, 1, 200).reshape(-1, 1)
     elif task_name == 'burgers1d':
         x = torch.linspace(-1, 1, 200).reshape(-1, 1)
+    elif task_name == 'helmholtz1d':
+        x = torch.linspace(0, 1, max(400, int(alpha["m"]) * 30)).reshape(-1, 1)
     else:
         raise ValueError("Unsupported task")
 
-    t = torch.ones_like(x)
     model.eval()
     with torch.no_grad():
-        pred = model(x, t).detach().cpu().numpy().reshape(-1)
+        if task_name == 'helmholtz1d':
+            pred = model(x).detach().cpu().numpy().reshape(-1)
+            true = helmholtz_1d_solution(x, alpha["m"]).detach().cpu().numpy().reshape(-1)
+            true_name = "exact"
+            y_name = "u(x)"
+        else:
+            t = torch.ones_like(x)
+            pred = model(x, t).detach().cpu().numpy().reshape(-1)
+            y_name = "u(x, 1)"
         if task_name == 'heat1d':
             true = heat_1d_solution(x, t, alpha).detach().cpu().numpy().reshape(-1)
             true_name = "exact"
-        else:
+        elif task_name == 'burgers1d':
             ref_x, ref_t, vals = burgers_1d_reference(200, alpha)
             true = vals[:, -1]
             true_name = "reference"
@@ -391,7 +474,7 @@ def run_experiment(config):
     ax.plot(x_np, true, label=true_name)
     ax.plot(x_np, pred, label="pinn")
     ax.set_xlabel("x")
-    ax.set_ylabel("u(x, 1)")
+    ax.set_ylabel(y_name)
     ax.grid(True)
     ax.legend()
     fig.tight_layout()
