@@ -1,0 +1,22 @@
+{
+  "task_name": "helmholtz1d",
+  "dtype": "fp64",
+  "seed": 1,
+  "alpha": {
+    "m": 10,
+    "lambda_val": 1.0
+  },
+  "hid_size": 128,
+  "num_layers": 4,
+  "n_collocation": 5000,
+  "n_ic": 0,
+  "n_bc": 2,
+  "adam_steps": 2000,
+  "lbfgs_steps": 1000,
+  "final_loss": 0.07227903499978433,
+  "final_l2_error": 0.0063527287590072895,
+  "time_sec": 120.34825491905212,
+  "log_dir": "/kaggle/working/runs/helmholtz_m10_fp64_1",
+  "m": 10,
+  "lambda_val": 1.0
+}

@@ -1,0 +1,22 @@
+{
+  "task_name": "helmholtz1d",
+  "dtype": "fp32",
+  "seed": 0,
+  "alpha": {
+    "m": 8,
+    "lambda_val": 1.0
+  },
+  "hid_size": 128,
+  "num_layers": 4,
+  "n_collocation": 5000,
+  "n_ic": 0,
+  "n_bc": 2,
+  "adam_steps": 10000,
+  "lbfgs_steps": 800,
+  "final_loss": 0.030001886188983917,
+  "final_l2_error": 9.055488586425781,
+  "time_sec": 145.38935780525208,
+  "log_dir": "runs/helmholtz_m8_fp32_0",
+  "m": 8,
+  "lambda_val": 1.0
+}

@@ -1,0 +1,17 @@
+{
+  "task_name": "heat1d",
+  "dtype": "fp32",
+  "seed": 0,
+  "alpha": 0.1,
+  "hid_size": 64,
+  "num_layers": 4,
+  "n_collocation": 5000,
+  "n_ic": 500,
+  "n_bc": 500,
+  "adam_steps": 8000,
+  "lbfgs_steps": 500,
+  "final_loss": 2.2018689378455747e-06,
+  "final_l2_error": 0.00037525297375395894,
+  "time_sec": 96.47497844696045,
+  "log_dir": "/kaggle/working/runs/heat1d_fp32_0"
+}

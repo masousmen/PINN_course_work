@@ -1,0 +1,22 @@
+{
+  "task_name": "helmholtz1d",
+  "dtype": "fp64",
+  "seed": 1,
+  "alpha": {
+    "m": 15,
+    "lambda_val": 1.0
+  },
+  "hid_size": 128,
+  "num_layers": 4,
+  "n_collocation": 5000,
+  "n_ic": 0,
+  "n_bc": 2,
+  "adam_steps": 10000,
+  "lbfgs_steps": 800,
+  "final_loss": 0.4548909346184984,
+  "final_l2_error": 11.871134287362322,
+  "time_sec": 146.27697086334229,
+  "log_dir": "runs/helmholtz_m15_fp64_1",
+  "m": 15,
+  "lambda_val": 1.0
+}

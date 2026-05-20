@@ -1,0 +1,18 @@
+{
+  "task_name": "burgers1d",
+  "dtype": "fp32",
+  "seed": 0,
+  "alpha": 0.1,
+  "hid_size": 64,
+  "num_layers": 4,
+  "n_collocation": 5000,
+  "n_ic": 500,
+  "n_bc": 500,
+  "adam_steps": 8000,
+  "lbfgs_steps": 500,
+  "final_loss": 8.487010745739099e-06,
+  "final_l2_error": 0.023654714226722717,
+  "time_sec": 107.60891056060791,
+  "log_dir": "/kaggle/working/runs/burgers1d_nu_0p1_fp32_0",
+  "nu": 0.1
+}

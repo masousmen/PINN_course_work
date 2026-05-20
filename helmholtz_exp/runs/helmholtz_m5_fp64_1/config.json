@@ -1,0 +1,21 @@
+{
+  "task_name": "helmholtz1d",
+  "dtype": "fp64",
+  "seed": 1,
+  "device": "cuda",
+  "m": 5,
+  "lambda_val": 1.0,
+  "hid_size": 128,
+  "num_layers": 4,
+  "n_collocation": 5000,
+  "n_bc": 2,
+  "adam_steps": 2000,
+  "lbfgs_steps": 1000,
+  "lr_adam": 0.001,
+  "use_adam": true,
+  "use_lbfgs": true,
+  "lbfgs_tolerance_grad": 1e-12,
+  "lbfgs_tolerance_change": 1e-14,
+  "lbfgs_history_size": 100,
+  "log_dir": "/kaggle/working/runs/helmholtz_m5_fp64_1"
+}
