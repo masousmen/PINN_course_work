@@ -57,6 +57,13 @@ def helmholtz_1d_force(x, m, lambda_val):
     return (lambda_val - (m * torch.pi) ** 2) * torch.sin(m * torch.pi * x)
 
 
+def helmholtz_model_value(model, x, alpha):
+    u = model(x)
+    if alpha.get("hard_bc", False):
+        u = x * (1 - x) * u
+    return u
+
+
 def burgers_1d_initial(x):
     return -torch.sin(torch.pi * x)
 
@@ -226,7 +233,7 @@ def pinn_loss(model, points, alpha, task):
         lambda_val = alpha["lambda_val"]
 
         x_pde = points['x_pde']
-        u = model(x_pde)
+        u = helmholtz_model_value(model, x_pde, alpha)
         ones = torch.ones_like(u)
         u_x = torch.autograd.grad(u, x_pde, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
         u_xx = torch.autograd.grad(u_x, x_pde, grad_outputs=torch.ones_like(u_x), create_graph=True, retain_graph=True)[0]
@@ -236,12 +243,15 @@ def pinn_loss(model, points, alpha, task):
         res = (u_xx + lambda_val * u - f) / scale
         pde_loss = torch.mean(res ** 2)
 
-        u0 = model(points["x0"])
-        u1 = model(points["x1"])
-        bc_loss = torch.mean(u0 ** 2) + torch.mean(u1 ** 2)
+        if alpha.get("hard_bc", False):
+            bc_loss = pde_loss * 0
+        else:
+            u0 = model(points["x0"])
+            u1 = model(points["x1"])
+            bc_loss = torch.mean(u0 ** 2) + torch.mean(u1 ** 2)
         ic_loss = pde_loss * 0
 
-        loss = pde_loss + bc_loss
+        loss = pde_loss + alpha.get("bc_weight", 1.0) * bc_loss
         return loss, pde_loss, ic_loss, bc_loss
 
     raise ValueError("Unsupported task")
@@ -266,7 +276,7 @@ def l2_error(model, alpha, task):
     with torch.no_grad():
         if task == 'helmholtz1d':
             xv = x.reshape(-1, 1)
-            pred = model(xv)
+            pred = helmholtz_model_value(model, xv, alpha)
             true = helmholtz_1d_solution(xv, alpha["m"])
         else:
             t = torch.linspace(0, 1, n)
@@ -332,6 +342,8 @@ def run_experiment(config):
         alpha = {
             "m": config.get('m', 1),
             "lambda_val": config.get('lambda_val', 1.0),
+            "hard_bc": config.get('hard_bc', False),
+            "bc_weight": config.get('bc_weight', 1.0),
         }
     else:
         alpha = config.get('alpha', 0.1)
@@ -434,6 +446,8 @@ def run_experiment(config):
     if task_name == 'helmholtz1d':
         summary["m"] = alpha["m"]
         summary["lambda_val"] = alpha["lambda_val"]
+        summary["hard_bc"] = alpha["hard_bc"]
+        summary["bc_weight"] = alpha["bc_weight"]
 
     with open(log_dir / "summary.json", 'w') as file:
         json.dump(summary, file, indent=2)
@@ -441,6 +455,10 @@ def run_experiment(config):
     seed = config.get('seed', 0)
     if task_name == 'helmholtz1d':
         plot_title = f"helmholtz1d, m={alpha['m']}, {dtype_name}, seed={seed}"
+        if alpha.get("hard_bc", False):
+            plot_title += ", hard_bc"
+        if alpha.get("bc_weight", 1.0) != 1.0:
+            plot_title += f", bc_w={alpha['bc_weight']:.4g}"
     elif task_name == 'burgers1d':
         plot_title = f"burgers1d, nu={float(alpha):.4g}, {dtype_name}, seed={seed}"
     else:
@@ -476,7 +494,7 @@ def run_experiment(config):
     model.eval()
     with torch.no_grad():
         if task_name == 'helmholtz1d':
-            pred = model(x).detach().cpu().numpy().reshape(-1)
+            pred = helmholtz_model_value(model, x, alpha).detach().cpu().numpy().reshape(-1)
             true = helmholtz_1d_solution(x, alpha["m"]).detach().cpu().numpy().reshape(-1)
             true_name = "exact"
             y_name = "u(x)"
