@@ -48,6 +48,52 @@ def get_dtype(type_name):
 def heat_1d_solution(x, t, alpha):
     return torch.exp(-torch.pi * torch.pi * alpha * t) * torch.sin(torch.pi * x)
 
+def burgers_1d_initial(x):
+    return -torch.sin(torch.pi * x)
+
+
+burgers_cache = {}
+
+
+def burgers_1d_reference(n, nu):
+    key = (n, round(float(nu), 12))
+    if key in burgers_cache:
+        return burgers_cache[key]
+
+    x = np.linspace(-1, 1, n)
+    ts = np.linspace(0, 1, n)
+    dx = x[1] - x[0]
+
+    u = -np.sin(np.pi * x)
+    u[0] = 0
+    u[-1] = 0
+
+    vals = np.zeros((n, n))
+    vals[:, 0] = u
+
+    dt = min(0.0005, 0.2 * dx * dx / max(float(nu), 1e-8))
+    steps = int(np.ceil(1.0 / dt))
+    dt = 1.0 / steps
+    k = 1
+
+    for step in range(1, steps + 1):
+        old = u.copy()
+        ux_left = (old[1:-1] - old[:-2]) / dx
+        ux_right = (old[2:] - old[1:-1]) / dx
+        ux = np.where(old[1:-1] >= 0, ux_left, ux_right)
+        uxx = (old[2:] - 2 * old[1:-1] + old[:-2]) / (dx * dx)
+        u[1:-1] = old[1:-1] - dt * old[1:-1] * ux + nu * dt * uxx
+        u[0] = 0
+        u[-1] = 0
+
+        cur_t = step * dt
+        while k < n and cur_t >= ts[k]:
+            vals[:, k] = u
+            k += 1
+
+    burgers_cache[key] = (x, ts, vals)
+    return burgers_cache[key]
+
 
 def make_points(n_collocation, n_ic, n_bc, task):
     if task == 'heat1d':
@@ -61,6 +107,30 @@ def make_points(n_collocation, n_ic, n_bc, task):
 
         t_bc = torch.rand(n_bc, 1)
         x0 = torch.zeros(n_bc, 1)
+        x1 = torch.ones(n_bc, 1)
+
+        points = {
+            "x_pde": x_pde,
+            "t_pde": t_pde,
+            "x_ic": x_ic,
+            "t_ic": t_ic,
+            "t_bc": t_bc,
+            "x0": x0,
+            "x1": x1,
+        }
+        return points
+
+    if task == 'burgers1d':
+        x_pde = 2 * torch.rand(n_collocation, 1) - 1
+        t_pde = torch.rand(n_collocation, 1)
+        x_pde.requires_grad_(True)
+        t_pde.requires_grad_(True)
+
+        x_ic = 2 * torch.rand(n_ic, 1) - 1
+        t_ic = torch.zeros(n_ic, 1)
+
+        t_bc = torch.rand(n_bc, 1)
+        x0 = -torch.ones(n_bc, 1)
         x1 = torch.ones(n_bc, 1)
 
         points = {
@@ -103,22 +173,52 @@ def pinn_loss(model, points, alpha, task):
         loss = pde_loss + ic_loss + bc_loss
         return loss, pde_loss, ic_loss, bc_loss
 
+    if task == 'burgers1d':
+        x_pde = points['x_pde']
+        t_pde = points['t_pde']
+        u = model(x_pde, t_pde)
+        ones = torch.ones_like(u)
+        u_t = torch.autograd.grad(u, t_pde, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
+        u_x = torch.autograd.grad(u, x_pde, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
+        u_xx = torch.autograd.grad(u_x, x_pde, grad_outputs=torch.ones_like(u_x), create_graph=True, retain_graph=True)[0]
+        res = u_t + u * u_x - alpha * u_xx
+        pde_loss = torch.mean(res ** 2)
+
+        u_ic = model(points["x_ic"], points["t_ic"])
+        u_ic_true = burgers_1d_initial(points["x_ic"])
+        ic_loss = torch.mean((u_ic - u_ic_true) ** 2)
+
+        u0 = model(points["x0"], points["t_bc"])
+        u1 = model(points["x1"], points["t_bc"])
+        bc_loss = torch.mean(u0 ** 2) + torch.mean(u1 ** 2)
+
+        loss = pde_loss + ic_loss + bc_loss
+        return loss, pde_loss, ic_loss, bc_loss
+
     raise ValueError("Unsupported task")
 
 
 def l2_error(model, alpha, task):
     n = 100
-    x = torch.linspace(0, 1, n)
+    if task == 'heat1d':
+        x = torch.linspace(0, 1, n)
+    elif task == 'burgers1d':
+        x = torch.linspace(-1, 1, n)
+    else:
+        raise ValueError("Unsupported task")
+
     t = torch.linspace(0, 1, n)
     xx, tt = torch.meshgrid(x, t, indexing="ij")
     xv = xx.reshape(-1, 1)
     tv = tt.reshape(-1, 1)
-
     model.eval()
     with torch.no_grad():
         pred = model(xv, tv)
         if task == 'heat1d':
             true = heat_1d_solution(xv, tv, alpha)
+        elif task == 'burgers1d':
+            ref_x, ref_t, vals = burgers_1d_reference(n, alpha)
+            true = torch.tensor(vals.reshape(-1, 1), dtype=pred.dtype, device=pred.device)
         else:
             raise ValueError("Unsupported task")
         err = torch.sqrt(torch.mean((pred - true) ** 2)) / torch.sqrt(torch.mean(true ** 2))
@@ -128,6 +228,8 @@ def l2_error(model, alpha, task):
 
 def get_input_dim(task):
     if task == 'heat1d':
+        return 2
+    if task == 'burgers1d':
         return 2
     raise ValueError("Unsupported task")
 
@@ -157,7 +259,10 @@ def run_experiment(config):
     input_dim = config.get('input_dim', get_input_dim(task_name))
     hid_size = config.get('hid_size', config.get('hidden_dim', 64))
     num_layers = config.get('num_layers', 4)
-    alpha = config.get('alpha', 0.1)
+    if task_name == 'burgers1d':
+        alpha = config.get('nu', config.get('alpha', 0.01 / np.pi))
+    else:
+        alpha = config.get('alpha', 0.1)
 
     points = make_points(config['n_collocation'], config['n_ic'], config['n_bc'], task_name)
     model = PINN(input_dim=input_dim, hid_size=hid_size, num_layers=num_layers).to(device)
@@ -238,6 +343,9 @@ def run_experiment(config):
         "time_sec": last["time_sec"],
         "log_dir": str(log_dir),
     }
+    if is_burgers(task_name):
+        summary["nu"] = alpha
+
     with open(log_dir / "summary.json", 'w') as file:
         json.dump(summary, file, indent=2)
     fig, ax = plt.subplots(1, 2, figsize=(10, 4))
@@ -254,16 +362,29 @@ def run_experiment(config):
     fig.tight_layout()
     fig.savefig(log_dir / "curves.png", dpi=150)
     plt.close(fig)
-    x = torch.linspace(0, 1, 200).reshape(-1, 1)
+
+    if task_name == 'heat1d':
+        x = torch.linspace(0, 1, 200).reshape(-1, 1)
+    elif is_burgers(task_name):
+        x = torch.linspace(-1, 1, 200).reshape(-1, 1)
+    else:
+        raise ValueError("Unsupported task")
+
     t = torch.ones_like(x)
     model.eval()
     with torch.no_grad():
-        pred = model(x, t).detach().cpu().numpy()
-        true = heat_1d_solution(x, t, alpha).detach().cpu().numpy()
-        x_np = x.detach().cpu().numpy()
+        pred = model(x, t).detach().cpu().numpy().reshape(-1)
+        if task_name == 'heat1d':
+            true = heat_1d_solution(x, t, alpha).detach().cpu().numpy().reshape(-1)
+            true_name = "exact"
+        else:
+            ref_x, ref_t, vals = burgers_1d_reference(200, alpha)
+            true = vals[:, -1]
+            true_name = "reference"
+        x_np = x.detach().cpu().numpy().reshape(-1)
     model.train()
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(x_np, true, label="exact")
+    ax.plot(x_np, true, label=true_name)
     ax.plot(x_np, pred, label="pinn")
     ax.set_xlabel("x")
     ax.set_ylabel("u(x, 1)")
