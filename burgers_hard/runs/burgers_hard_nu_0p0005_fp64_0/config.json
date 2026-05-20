@@ -1,0 +1,18 @@
+{
+  "task_name": "burgers1d",
+  "dtype": "fp64",
+  "seed": 0,
+  "device": "cuda",
+  "nu": 0.0005,
+  "hid_size": 96,
+  "num_layers": 5,
+  "n_collocation": 10000,
+  "n_ic": 800,
+  "n_bc": 800,
+  "adam_steps": 12000,
+  "lbfgs_steps": 1200,
+  "lr_adam": 0.0005,
+  "use_adam": true,
+  "use_lbfgs": true,
+  "log_dir": "/kaggle/working/runs/burgers_hard_nu_0p0005_fp64_0"
+}

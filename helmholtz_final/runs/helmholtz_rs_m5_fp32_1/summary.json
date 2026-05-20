@@ -1,0 +1,23 @@
+{
+  "task_name": "helmholtz1d",
+  "dtype": "fp32",
+  "seed": 1,
+  "alpha": {
+    "m": 5,
+    "lambda_val": 1.0
+  },
+  "hid_size": 128,
+  "num_layers": 4,
+  "n_collocation": 5000,
+  "n_ic": 0,
+  "n_bc": 2,
+  "adam_steps": 10000,
+  "lbfgs_steps": 1000,
+  "resample_every": 200,
+  "final_loss": 3.3366245588695165e-07,
+  "final_l2_error": 0.00014947904855944216,
+  "time_sec": 180.42691206932068,
+  "log_dir": "runs/helmholtz_rs_m5_fp32_1",
+  "m": 5,
+  "lambda_val": 1.0
+}
