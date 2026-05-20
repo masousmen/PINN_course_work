@@ -91,6 +91,10 @@ def burgers_1d_reference(n, nu):
             vals[:, k] = u
             k += 1
 
+    while k < n:
+        vals[:, k] = u
+        k += 1
+
     burgers_cache[key] = (x, ts, vals)
     return burgers_cache[key]
 
@@ -343,7 +347,7 @@ def run_experiment(config):
         "time_sec": last["time_sec"],
         "log_dir": str(log_dir),
     }
-    if is_burgers(task_name):
+    if task_name == 'burgers1d':
         summary["nu"] = alpha
 
     with open(log_dir / "summary.json", 'w') as file:
@@ -365,7 +369,7 @@ def run_experiment(config):
 
     if task_name == 'heat1d':
         x = torch.linspace(0, 1, 200).reshape(-1, 1)
-    elif is_burgers(task_name):
+    elif task_name == 'burgers1d':
         x = torch.linspace(-1, 1, 200).reshape(-1, 1)
     else:
         raise ValueError("Unsupported task")
