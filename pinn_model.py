@@ -295,6 +295,11 @@ def get_input_dim(task):
         return 1
     raise ValueError("Unsupported task")
 
+def init_weights(model):
+    for layer in model.model:
+        if isinstance(layer, nn.Linear):
+            nn.init.xavier_uniform_(layer.weight, gain=nn.init.calculate_gain("tanh"))
+            nn.init.zeros_(layer.bias)
 
 def run_experiment(config):
     dtype_name = config.get('dtype', config.get('dtype_name', 'fp32'))
@@ -334,7 +339,7 @@ def run_experiment(config):
     n_ic = config.get('n_ic', 0)
     points = make_points(config['n_collocation'], n_ic, config['n_bc'], task_name)
     model = PINN(input_dim=input_dim, hid_size=hid_size, num_layers=num_layers).to(device)
-
+    init_weights(model)
     history = []
     start_time = time.time()
 
@@ -354,10 +359,14 @@ def run_experiment(config):
     use_adam = config.get('use_adam', True)
     adam_steps = config.get('adam_steps', 3000)
     lr_adam = config.get('lr_adam', config.get('lr', 1e-3))
+    resample_every = int(config.get('resample_every', 0))
 
     if use_adam:
         optimizer = torch.optim.Adam(model.parameters(), lr=lr_adam)
         for step in range(1, adam_steps + 1):
+            if resample_every > 0 and step > 1 and (step - 1) % resample_every == 0:
+                points = make_points(config['n_collocation'], n_ic, config['n_bc'], task_name)
+
             optimizer.zero_grad()
             loss, pde_loss, ic_loss, bc_loss = pinn_loss(model, points, alpha, task_name)
             loss.backward()
@@ -373,11 +382,12 @@ def run_experiment(config):
     if use_lbfgs:
         optimizer = torch.optim.LBFGS(
             model.parameters(),
-            lr=1.0,
+            lr=config.get('lbfgs_lr', 1.0),
             max_iter=1,
             history_size=config.get('lbfgs_history_size', 50),
             tolerance_grad=config.get('lbfgs_tolerance_grad', 1e-7),
             tolerance_change=config.get('lbfgs_tolerance_change', 1e-9),
+            line_search_fn=config.get('lbfgs_line_search_fn', None),
         )
 
         for i in range(1, lbfgs_steps + 1):
@@ -413,6 +423,7 @@ def run_experiment(config):
         "n_bc": config['n_bc'],
         "adam_steps": adam_steps,
         "lbfgs_steps": lbfgs_steps,
+        "resample_every": resample_every,
         "final_loss": last["total_loss"],
         "final_l2_error": last["l2_error"],
         "time_sec": last["time_sec"],
@@ -426,6 +437,17 @@ def run_experiment(config):
 
     with open(log_dir / "summary.json", 'w') as file:
         json.dump(summary, file, indent=2)
+
+    seed = config.get('seed', 0)
+    if task_name == 'helmholtz1d':
+        plot_title = f"helmholtz1d, m={alpha['m']}, {dtype_name}, seed={seed}"
+    elif task_name == 'burgers1d':
+        plot_title = f"burgers1d, nu={float(alpha):.4g}, {dtype_name}, seed={seed}"
+    else:
+        plot_title = f"heat1d, alpha={float(alpha):.4g}, {dtype_name}, seed={seed}"
+    if resample_every > 0:
+        plot_title += f", resample={resample_every}"
+
     fig, ax = plt.subplots(1, 2, figsize=(10, 4))
     ax[0].plot(hist["step"], hist["total_loss"])
     ax[0].set_yscale("log")
@@ -437,6 +459,7 @@ def run_experiment(config):
     ax[1].set_xlabel("step")
     ax[1].set_ylabel("l2_error")
     ax[1].grid(True)
+    fig.suptitle(plot_title)
     fig.tight_layout()
     fig.savefig(log_dir / "curves.png", dpi=150)
     plt.close(fig)
@@ -475,6 +498,7 @@ def run_experiment(config):
     ax.plot(x_np, pred, label="pinn")
     ax.set_xlabel("x")
     ax.set_ylabel(y_name)
+    ax.set_title(plot_title)
     ax.grid(True)
     ax.legend()
     fig.tight_layout()
