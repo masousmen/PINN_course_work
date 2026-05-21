@@ -1,0 +1,27 @@
+{
+  "task_name": "helmholtz1d",
+  "dtype": "fp32",
+  "seed": 1,
+  "alpha": {
+    "m": 10,
+    "lambda_val": 1.0,
+    "hard_bc": false,
+    "bc_weight": 1.0
+  },
+  "hid_size": 128,
+  "num_layers": 4,
+  "n_collocation": 5000,
+  "n_ic": 0,
+  "n_bc": 2,
+  "adam_steps": 10000,
+  "lbfgs_steps": 0,
+  "resample_every": 200,
+  "final_loss": 2.8119258786318824e-05,
+  "final_l2_error": 0.5247029066085815,
+  "time_sec": 91.45751595497131,
+  "log_dir": "/kaggle/working/runs/overnight_r086_m10_adam_only_fp32_s1",
+  "m": 10,
+  "lambda_val": 1.0,
+  "hard_bc": false,
+  "bc_weight": 1.0
+}
