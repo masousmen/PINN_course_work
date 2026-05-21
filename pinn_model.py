@@ -49,6 +49,10 @@ def heat_1d_solution(x, t, alpha):
     return torch.exp(-torch.pi * torch.pi * alpha * t) * torch.sin(torch.pi * x)
 
 
+def convection_1d_solution(x, t, beta):
+    return torch.sin(x - beta * t)
+
+
 def helmholtz_1d_solution(x, m):
     return torch.sin(m * torch.pi * x)
 
@@ -115,7 +119,7 @@ def burgers_1d_reference(n, nu):
     return burgers_cache[key]
 
 
-def make_points(n_collocation, n_ic, n_bc, task):
+def make_points(n_collocation, n_ic, n_bc, task, point_mode=None):
     if task == 'heat1d':
         x_pde = torch.rand(n_collocation, 1)
         t_pde = torch.rand(n_collocation, 1)
@@ -164,8 +168,46 @@ def make_points(n_collocation, n_ic, n_bc, task):
         }
         return points
 
+    if task == 'convection1d':
+        n = int(np.sqrt(n_collocation))
+        if point_mode == 'grid':
+            x = torch.linspace(0, 2 * torch.pi, n).reshape(-1, 1)
+            t = torch.linspace(0, 1, n).reshape(-1, 1)
+            tt, xx = torch.meshgrid(t.reshape(-1), x.reshape(-1), indexing="ij")
+            x_pde = xx.reshape(-1, 1)
+            t_pde = tt.reshape(-1, 1)
+        else:
+            x_pde = 2 * torch.pi * torch.rand(n_collocation, 1)
+            t_pde = torch.rand(n_collocation, 1)
+        x_pde.requires_grad_(True)
+        t_pde.requires_grad_(True)
+
+        if point_mode == 'grid':
+            x_ic = torch.linspace(0, 2 * torch.pi, n_ic).reshape(-1, 1)
+            t_bc = torch.linspace(0, 1, n_bc).reshape(-1, 1)
+        else:
+            x_ic = 2 * torch.pi * torch.rand(n_ic, 1)
+            t_bc = torch.rand(n_bc, 1)
+        t_ic = torch.zeros_like(x_ic)
+        x0 = torch.zeros_like(t_bc)
+        x1 = 2 * torch.pi * torch.ones_like(t_bc)
+
+        points = {
+            "x_pde": x_pde,
+            "t_pde": t_pde,
+            "x_ic": x_ic,
+            "t_ic": t_ic,
+            "t_bc": t_bc,
+            "x0": x0,
+            "x1": x1,
+        }
+        return points
+
     if task == 'helmholtz1d':
-        x_pde = torch.rand(n_collocation, 1)
+        if point_mode == 'grid':
+            x_pde = torch.linspace(0, 1, n_collocation).reshape(-1, 1)
+        else:
+            x_pde = torch.rand(n_collocation, 1)
         x_pde.requires_grad_(True)
 
         x0 = torch.zeros(n_bc, 1)
@@ -228,6 +270,30 @@ def pinn_loss(model, points, alpha, task):
         loss = pde_loss + ic_loss + bc_loss
         return loss, pde_loss, ic_loss, bc_loss
 
+    if task == 'convection1d':
+        x_pde = points['x_pde']
+        t_pde = points['t_pde']
+
+        u = model(x_pde, t_pde)
+        ones = torch.ones_like(u)
+
+        u_t = torch.autograd.grad(u, t_pde, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
+        u_x = torch.autograd.grad(u, x_pde, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
+
+        res = u_t + alpha * u_x
+        pde_loss = torch.mean(res ** 2)
+
+        u_ic = model(points["x_ic"], points["t_ic"])
+        u_ic_true = torch.sin(points["x_ic"])
+        ic_loss = torch.mean((u_ic - u_ic_true) ** 2)
+
+        u0 = model(points["x0"], points["t_bc"])
+        u1 = model(points["x1"], points["t_bc"])
+        bc_loss = torch.mean((u0 - u1) ** 2)
+
+        loss = pde_loss + ic_loss + bc_loss
+        return loss, pde_loss, ic_loss, bc_loss
+
     if task == 'helmholtz1d':
         m = alpha["m"]
         lambda_val = alpha["lambda_val"]
@@ -267,6 +333,8 @@ def l2_error(model, alpha, task):
         x = torch.linspace(0, 1, n)
     elif task == 'burgers1d':
         x = torch.linspace(-1, 1, n)
+    elif task == 'convection1d':
+        x = torch.linspace(0, 2 * torch.pi, n)
     elif task == 'helmholtz1d':
         x = torch.linspace(0, 1, n)
     else:
@@ -289,6 +357,8 @@ def l2_error(model, alpha, task):
             elif task == 'burgers1d':
                 ref_x, ref_t, vals = burgers_1d_reference(n, alpha)
                 true = torch.tensor(vals.reshape(-1, 1), dtype=pred.dtype, device=pred.device)
+            elif task == 'convection1d':
+                true = convection_1d_solution(xv, tv, alpha)
             else:
                 raise ValueError("Unsupported task")
         err = torch.sqrt(torch.mean((pred - true) ** 2)) / torch.sqrt(torch.mean(true ** 2))
@@ -301,14 +371,18 @@ def get_input_dim(task):
         return 2
     if task == 'burgers1d':
         return 2
+    if task == 'convection1d':
+        return 2
     if task == 'helmholtz1d':
         return 1
     raise ValueError("Unsupported task")
 
-def init_weights(model):
+def init_weights(model, gain=None):
+    if gain is None:
+        gain = nn.init.calculate_gain("tanh")
     for layer in model.model:
         if isinstance(layer, nn.Linear):
-            nn.init.xavier_uniform_(layer.weight, gain=nn.init.calculate_gain("tanh"))
+            nn.init.xavier_uniform_(layer.weight, gain=gain)
             nn.init.zeros_(layer.bias)
 
 def run_experiment(config):
@@ -338,6 +412,8 @@ def run_experiment(config):
     num_layers = config.get('num_layers', 4)
     if task_name == 'burgers1d':
         alpha = config.get('nu', config.get('alpha', 0.01 / np.pi))
+    elif task_name == 'convection1d':
+        alpha = config.get('beta', config.get('alpha', 50.0))
     elif task_name == 'helmholtz1d':
         alpha = {
             "m": config.get('m', 1),
@@ -349,9 +425,10 @@ def run_experiment(config):
         alpha = config.get('alpha', 0.1)
 
     n_ic = config.get('n_ic', 0)
-    points = make_points(config['n_collocation'], n_ic, config['n_bc'], task_name)
+    point_mode = config.get('point_mode', config.get('collocation_type', None))
+    points = make_points(config['n_collocation'], n_ic, config['n_bc'], task_name, point_mode)
     model = PINN(input_dim=input_dim, hid_size=hid_size, num_layers=num_layers).to(device)
-    init_weights(model)
+    init_weights(model, config.get('init_gain', None))
     history = []
     start_time = time.time()
 
@@ -377,7 +454,7 @@ def run_experiment(config):
         optimizer = torch.optim.Adam(model.parameters(), lr=lr_adam)
         for step in range(1, adam_steps + 1):
             if resample_every > 0 and step > 1 and (step - 1) % resample_every == 0:
-                points = make_points(config['n_collocation'], n_ic, config['n_bc'], task_name)
+                points = make_points(config['n_collocation'], n_ic, config['n_bc'], task_name, point_mode)
 
             optimizer.zero_grad()
             loss, pde_loss, ic_loss, bc_loss = pinn_loss(model, points, alpha, task_name)
@@ -395,7 +472,8 @@ def run_experiment(config):
         optimizer = torch.optim.LBFGS(
             model.parameters(),
             lr=config.get('lbfgs_lr', 1.0),
-            max_iter=1,
+            max_iter=config.get('lbfgs_max_iter', 1),
+            max_eval=config.get('lbfgs_max_eval', None),
             history_size=config.get('lbfgs_history_size', 50),
             tolerance_grad=config.get('lbfgs_tolerance_grad', 1e-7),
             tolerance_change=config.get('lbfgs_tolerance_change', 1e-9),
@@ -430,11 +508,16 @@ def run_experiment(config):
         "alpha": alpha,
         "hid_size": hid_size,
         "num_layers": num_layers,
+        "init_gain": config.get('init_gain', None),
         "n_collocation": config['n_collocation'],
+        "point_mode": point_mode,
         "n_ic": n_ic,
         "n_bc": config['n_bc'],
         "adam_steps": adam_steps,
         "lbfgs_steps": lbfgs_steps,
+        "lbfgs_max_iter": config.get('lbfgs_max_iter', 1),
+        "lbfgs_max_eval": config.get('lbfgs_max_eval', None),
+        "lbfgs_lr": config.get('lbfgs_lr', 1.0),
         "resample_every": resample_every,
         "final_loss": last["total_loss"],
         "final_l2_error": last["l2_error"],
@@ -443,6 +526,8 @@ def run_experiment(config):
     }
     if task_name == 'burgers1d':
         summary["nu"] = alpha
+    if task_name == 'convection1d':
+        summary["beta"] = alpha
     if task_name == 'helmholtz1d':
         summary["m"] = alpha["m"]
         summary["lambda_val"] = alpha["lambda_val"]
@@ -461,6 +546,8 @@ def run_experiment(config):
             plot_title += f", bc_w={alpha['bc_weight']:.4g}"
     elif task_name == 'burgers1d':
         plot_title = f"burgers1d, nu={float(alpha):.4g}, {dtype_name}, seed={seed}"
+    elif task_name == 'convection1d':
+        plot_title = f"convection1d, beta={float(alpha):.4g}, {dtype_name}, seed={seed}"
     else:
         plot_title = f"heat1d, alpha={float(alpha):.4g}, {dtype_name}, seed={seed}"
     if resample_every > 0:
@@ -486,6 +573,8 @@ def run_experiment(config):
         x = torch.linspace(0, 1, 200).reshape(-1, 1)
     elif task_name == 'burgers1d':
         x = torch.linspace(-1, 1, 200).reshape(-1, 1)
+    elif task_name == 'convection1d':
+        x = torch.linspace(0, 2 * torch.pi, 200).reshape(-1, 1)
     elif task_name == 'helmholtz1d':
         x = torch.linspace(0, 1, max(400, int(alpha["m"]) * 30)).reshape(-1, 1)
     else:
@@ -509,6 +598,9 @@ def run_experiment(config):
             ref_x, ref_t, vals = burgers_1d_reference(200, alpha)
             true = vals[:, -1]
             true_name = "reference"
+        elif task_name == 'convection1d':
+            true = convection_1d_solution(x, t, alpha).detach().cpu().numpy().reshape(-1)
+            true_name = "exact"
         x_np = x.detach().cpu().numpy().reshape(-1)
     model.train()
     fig, ax = plt.subplots(figsize=(6, 4))
