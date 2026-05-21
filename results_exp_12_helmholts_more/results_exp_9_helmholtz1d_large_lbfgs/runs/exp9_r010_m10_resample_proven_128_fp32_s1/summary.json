@@ -1,0 +1,32 @@
+{
+  "task_name": "helmholtz1d",
+  "dtype": "fp32",
+  "seed": 1,
+  "alpha": {
+    "m": 10,
+    "lambda_val": 1.0,
+    "hard_bc": false,
+    "bc_weight": 1.0
+  },
+  "hid_size": 128,
+  "num_layers": 4,
+  "init_gain": null,
+  "n_collocation": 5000,
+  "point_mode": null,
+  "n_ic": 0,
+  "n_bc": 2,
+  "adam_steps": 10000,
+  "lbfgs_steps": 2000,
+  "lbfgs_max_iter": 1,
+  "lbfgs_max_eval": null,
+  "lbfgs_lr": 1.0,
+  "resample_every": 200,
+  "final_loss": 2.8830002065660665e-06,
+  "final_l2_error": 0.004048014525324106,
+  "time_sec": 154.6102933883667,
+  "log_dir": "results_exp_9_helmholtz1d_large_lbfgs/runs/exp9_r010_m10_resample_proven_128_fp32_s1",
+  "m": 10,
+  "lambda_val": 1.0,
+  "hard_bc": false,
+  "bc_weight": 1.0
+}
