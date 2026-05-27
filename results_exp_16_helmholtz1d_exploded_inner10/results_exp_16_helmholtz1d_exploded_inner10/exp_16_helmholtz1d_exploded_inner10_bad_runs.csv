@@ -1,0 +1,1 @@
+run_id,variant,adam_name,lbfgs_name,m,dtype,seed,lr_adam,lbfgs_lr,best_l2_error,final_l2_error,elapsed_time
