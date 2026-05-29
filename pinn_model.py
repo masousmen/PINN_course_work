@@ -40,6 +40,8 @@ def get_dtype(type_name):
         return torch.float32
     if type_name == 'fp64' or type_name == 'float64':
         return torch.float64
+    if type_name == 'fp16' or type_name == 'float16':
+        return torch.float16
     if type_name == 'bf16':
         return torch.bfloat16
     raise ValueError("Unsupported dtype")

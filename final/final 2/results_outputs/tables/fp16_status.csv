@@ -1,0 +1,5 @@
+task_name,status,count
+burgers1d,nan,4
+convection1d,bad,2
+convection1d,nan,1
+helmholtz1d,nan,4

@@ -1,0 +1,2 @@
+step,opt,total_loss,pde_loss,ic_loss,bc_loss,l2_error,time_sec
+0,error,,,,,,0.001100778579711914

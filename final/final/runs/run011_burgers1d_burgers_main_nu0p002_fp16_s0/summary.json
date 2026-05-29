@@ -1,0 +1,10 @@
+{
+  "task_name": "burgers1d",
+  "dtype": "fp16",
+  "seed": 0,
+  "final_loss": null,
+  "final_l2_error": null,
+  "time_sec": 0.001100778579711914,
+  "log_dir": "final/runs/run011_burgers1d_burgers_main_nu0p002_fp16_s0",
+  "error": "Unsupported dtype"
+}

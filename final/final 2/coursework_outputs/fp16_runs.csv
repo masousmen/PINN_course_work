@@ -1,0 +1,12 @@
+run_id,task_name,variant,case_name,case_value,dtype,seed,best_l2_error,final_l2_error,elapsed_time,error
+5,burgers1d,burgers_more_points,nu,0.001,fp16,0,,,823.5590693950653,
+6,burgers1d,burgers_more_points,nu,0.001,fp16,1,,,827.8239800930023,
+11,burgers1d,burgers_more_points,nu,0.002,fp16,0,,,829.2378642559052,
+12,burgers1d,burgers_more_points,nu,0.002,fp16,1,,,832.4802167415619,
+17,helmholtz1d,helmholtz_resample_long,m,8.0,fp16,0,,,399.1708152294159,
+18,helmholtz1d,helmholtz_resample_long,m,8.0,fp16,1,,,397.9707365036011,
+23,helmholtz1d,helmholtz_resample_long,m,12.0,fp16,0,,,398.68045806884766,
+24,helmholtz1d,helmholtz_resample_long,m,12.0,fp16,1,,,400.4289340972901,
+29,convection1d,convection_beta30_lbfgs_grid,beta,30.0,fp16,0,1.0009765625,1.0009765625,1134.0587012767792,
+30,convection1d,convection_beta30_lbfgs_grid,beta,30.0,fp16,1,,,0.2920892238616943,float division by zero
+33,convection1d,convection_beta50_wide_lbfgs,beta,50.0,fp16,0,1.0205078125,,1431.7947599887848,

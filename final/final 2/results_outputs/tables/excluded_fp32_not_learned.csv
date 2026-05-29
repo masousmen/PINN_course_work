@@ -1,0 +1,2 @@
+source,task_name,variant,case_name,case_value,best_l2_mean_fp32,best_l2_mean_fp64,count_fp32,count_fp64,elapsed_time_mean_fp32,elapsed_time_mean_fp64,final_l2_mean_fp32,final_l2_mean_fp64,fp64_over_fp32_best,fp64_over_fp32_final,result,fp32_learned,used_in_main,label
+final_results,convection1d,convection_beta50_wide_lbfgs,beta,50.0,0.6873066425323486,0.0071818074399789,1,1,1088.6382277011871,2370.150009393692,0.6873066425323486,0.0071818074399789,0.010449204176927306,0.010449204176927306,fp64 better,False,False,convection1d beta=50.0 | final_results
