@@ -1,0 +1,11 @@
+task_name,main_parameter_name,main_parameter_value,variant,n_total,n_valid,n_bad,valid_rate,best_l2_median,final_l2_median,typical_failure_reason
+burgers1d,nu,0.001,burgers_more_points,2,0,2,0.0,,,nan_metric
+burgers1d,nu,0.002,burgers_more_points,2,0,2,0.0,,,nan_metric
+burgers1d,nu,,burgers_main,4,0,4,0.0,,,runtime_error
+convection1d,beta,30.0,convection_beta30_lbfgs_grid,2,1,2,0.5,1.0009765625,1.0009765625,high_best_l2
+convection1d,beta,50.0,convection_beta50_wide_lbfgs,1,1,1,1.0,1.0205078125,,high_best_l2
+convection1d,beta,,convection_beta30,2,0,2,0.0,,,runtime_error
+convection1d,beta,,convection_beta50,1,0,1,0.0,,,runtime_error
+helmholtz1d,m,8.0,helmholtz_resample_long,2,0,2,0.0,,,nan_metric
+helmholtz1d,m,12.0,helmholtz_resample_long,2,0,2,0.0,,,nan_metric
+helmholtz1d,m,,helmholtz_main,4,0,4,0.0,,,runtime_error
