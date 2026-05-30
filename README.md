@@ -11,7 +11,7 @@
 - `scripts/analyze_results.py` - сбор таблиц и графиков из готовых логов
 - `report_results/tables` - итоговые таблицы для отчёта
 - `report_results/figures` - итоговые графики
-- `experiments_raw/` - архив старых запусков
+- `experiments_raw/` - запуски
 
 ## Установка
 
@@ -29,7 +29,7 @@ jupyter notebook notebooks/results_summary.ipynb
 
 В нём показаны основные таблицы, графики и короткие выводы по задачам.
 
-## Как пересобрать таблицы
+## Пересобрать таблицы
 
 ```bash
 python scripts/analyze_results.py
