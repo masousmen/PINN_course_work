@@ -1,25 +1,27 @@
-# Missing artifacts and small rerun plan
+# Missing artifacts
 
-## Missing metrics.csv
-- none for selected cases
+## Already available
 
-## Missing FP32/FP64 pairs
-- none for selected cases
+- tables with best/final relative L2
+- loss/L2 curves for selected cases
+- FP32/FP64 comparison
+- FP16 summary
+- selected cases for the report
 
-## Seed coverage
-- convection1d beta=50 `convection_beta50_wide_lbfgs`: not enough repeated seeds
+## Still missing for a polished report
 
-## Missing MAE/RMSE
-- convection1d beta=50 `convection_beta50_wide_lbfgs`
+- MAE/RMSE for selected convection cases, if dense-grid metrics are needed
+- exact/prediction/error maps for convection beta=50
+- one FP16 selected check on convection beta=50, if a failure illustration is needed
 
-## Missing solution/error maps
-- convection1d beta=50 `convection_beta50_wide_lbfgs`
+## Large rerun
 
 Large rerun is not needed.
 
-Small selected checks are useful only for dense-map figures and MAE/RMSE.
+## Minimal selected checks
 
-Planned runs:
 - convection_beta50_fp32_seed0
 - convection_beta50_fp64_seed0
-- convection_beta50_fp16_seed0, skipped automatically on CPU
+- convection_beta50_fp16_seed0
+
+Do not rerun all 33 final runs for the report.

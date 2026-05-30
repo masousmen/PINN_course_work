@@ -20,3 +20,5 @@ helmholtz_lbfgs_warmup_exp.ipynb
 helmholtz_overnight_exp.ipynb
 /runs/
 /helmholts_tmp/
+/report_results_clean/
+/results_selected_checks/
