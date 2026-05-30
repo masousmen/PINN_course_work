@@ -1,5 +1,0 @@
-raw rows: 922
-normalized runs: 459
-valid runs: 439
-bad runs: 249
-selected cases: 7
