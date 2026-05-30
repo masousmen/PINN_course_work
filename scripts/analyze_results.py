@@ -319,6 +319,8 @@ def archive_old_figures():
         "report_fp64_fp32_ratio.png",
         "report_seed_scatter.png",
         "report_convection_beta50_curves.png",
+        "report_burgers_nu0002_curves.png",
+        "report_task_overview.png",
     ]
     for p in fig_dir.glob("curves_*.png"):
         names.append(p.name)
@@ -342,6 +344,8 @@ def archive_old_tables():
         "unstable_cases.csv",
         "selected_cases.csv",
         "report_cases.csv",
+        "run_quality.csv",
+        "valid_runs.csv",
     ]
     for name in names:
         src = table_dir / name
@@ -569,7 +573,6 @@ def plot_curves(case_id, cases, runs, out_name, title):
 
 def make_figures(main, helm, diag, all_cases, overview, fp16, runs):
     archive_old_figures()
-    plot_task_overview(overview)
     plot_main_bars(main)
     plot_main_ratio(main)
     plot_helmholtz_ratio(helm)
@@ -579,7 +582,6 @@ def make_figures(main, helm, diag, all_cases, overview, fp16, runs):
     plot_burgers_summary(main)
     plot_fp16_summary(fp16)
     plot_curves("helmholtz_m12_long", all_cases, runs, "report_helmholtz_m12_curves.png", "Helmholtz m=12")
-    plot_curves("burgers_nu0p002", all_cases, runs, "report_burgers_nu0002_curves.png", "Burgers nu=0.002")
     plot_curves("convection_beta30", all_cases, runs, "report_convection_beta30_curves.png", "Convection beta=30")
     plot_curves("convection_beta50", all_cases, runs, "report_convection_beta50_check.png", "Convection beta=50: сложный одиночный запуск")
 
@@ -661,8 +663,7 @@ def write_readmes(runs, main, helm, diag, fp16):
         "- `notebooks/results_summary.ipynb` - обзор таблиц, графиков и коротких выводов",
         "- `report_results/tables` - итоговые таблицы",
         "- `report_results/figures` - графики для отчёта",
-        "- `report_results/notes/additional_checks.md` - необязательные проверки",
-        "- `experiments_raw/` - архивные логи (`results_exp_*` и `final/`)",
+        "- `experiments_raw/` - архив старых запусков",
         "",
         "## Установка",
         "",
@@ -690,6 +691,7 @@ def write_readmes(runs, main, helm, diag, fp16):
         "- `report_results/tables/report_helmholtz_cases.csv`",
         "- `report_results/tables/report_diagnostic_cases.csv`",
         "- `report_results/tables/task_overview.csv`",
+        "- `report_results/tables/fp32_fp64_comparison.csv`",
         "- `report_results/tables/fp16_summary.csv`",
         "- `report_results/figures/report_helmholtz_main_ratio.png`",
         "- `report_results/figures/report_helmholtz_m12_curves.png`",
@@ -719,7 +721,6 @@ def write_readmes(runs, main, helm, diag, fp16):
         "- `tables/task_overview.csv` - обзор всех найденных запусков",
         "- `tables/fp16_summary.csv` - отдельная сводка по FP16",
         "- `figures/` - графики для отчёта",
-        "- `notes/additional_checks.md` - небольшие проверки, если понадобится усилить convection beta=50",
         "",
         "## Главное по результатам",
         "",
@@ -727,9 +728,9 @@ def write_readmes(runs, main, helm, diag, fp16):
         "",
         "Burgers получился смешанным: на части запусков FP32 и FP64 близки, а на части FP64 не даёт преимущества.",
         "",
-        "Convection beta=30 можно использовать как аккуратный базовый пример. Convection beta=50 оставлен как диагностический сложный случай, потому что там слишком мало seed для сильного вывода.",
+        "Convection beta=30 - основной baseline для convection. Convection beta=50 - diagnostic: запусков мало, поэтому этот кейс не стоит использовать как главный устойчивый аргумент.",
         "",
-        "FP16 я не смешиваю с основной таблицей FP32/FP64. В этих логах он чаще показывает нестабильность, чем рабочий вариант для сравнения.",
+        "FP16 - отдельный failure-блок. В этих логах он чаще даёт плохие или невалидные метрики, поэтому я не смешиваю его с основной таблицей FP32/FP64.",
         "",
         "## Что не надо писать в отчёте",
         "",
@@ -746,11 +747,9 @@ def write_readmes(runs, main, helm, diag, fp16):
 def sync_base_tables():
     names = [
         ("all_runs.csv", "all_runs_normalized.csv"),
-        ("run_quality.csv", "run_quality.csv"),
         ("fp32_fp64_comparison.csv", "fp32_fp64_comparison.csv"),
         ("fp16_summary.csv", "fp16_summary.csv"),
         ("bad_runs.csv", "bad_runs.csv"),
-        ("valid_runs.csv", "valid_runs.csv"),
     ]
     for src, dst in names:
         copy_file(clean_dir / "tables" / src, table_dir / dst)
