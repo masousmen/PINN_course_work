@@ -1,68 +1,27 @@
-import contextlib
-import io
-import os
 from pathlib import Path
-import runpy
+import json
+import re
 import shutil
 
-os.environ.setdefault("MPLBACKEND", "Agg")
-os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/mpl")
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 
-root = Path(__file__).resolve().parents[1]
-clean_dir = root / "report_results_clean"
-out_dir = root / "report_results"
-table_dir = out_dir / "tables"
-fig_dir = out_dir / "figures"
-selected_dir = out_dir / "selected_runs"
-notes_dir = out_dir / "notes"
+ROOT = Path(__file__).resolve().parents[1]
+RAW_DIR = ROOT / "experiments_raw"
+OUT_DIR = ROOT / "report_results"
+TABLE_DIR = OUT_DIR / "tables"
+FIG_DIR = OUT_DIR / "figures"
 
-for p in [table_dir, fig_dir, selected_dir, notes_dir]:
-    p.mkdir(parents=True, exist_ok=True)
+BAD_L2_THRESHOLD = 0.8
 
 
-def fmt(x):
-    if pd.isna(x):
-        return ""
-    try:
-        return f"{float(x):.4g}"
-    except Exception:
-        return str(x)
-
-
-def same_num(a, b):
-    if pd.isna(a) and pd.isna(b):
-        return True
-    if pd.isna(a) or pd.isna(b):
-        return False
-    return abs(float(a) - float(b)) < 1e-9
-
-
-def clean_text(s):
-    return " ".join(str(s).replace("\n", " ").split())
-
-
-def copy_file(src, dst):
-    if src.exists():
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-
-
-def task_short(name):
-    return str(name).replace("1d", "")
-
-
-case_names = {
+CASE_NAMES = {
     "heat_alpha01": "Heat, α=0.1",
     "helmholtz_m12_long": "Helmholtz, m=12",
     "helmholtz_m12_rs": "Helmholtz, m=12, resampling",
-    "helmholtz_m12_resample128": "Helmholtz, m=12, long L-BFGS",
+    "helmholtz_m12_resample128": "Helmholtz, m=12, long run",
     "helmholtz_m7_rs": "Helmholtz, m=7",
     "helmholtz_m8_rs": "Helmholtz, m=8",
     "helmholtz_m10_resample128": "Helmholtz, m=10",
@@ -75,139 +34,684 @@ case_names = {
 }
 
 
-helmholtz_names = {
+HELMHOLTZ_NAMES = {
+    "helmholtz_m12_long": "m=12",
+    "helmholtz_m12_rs": "m=12, rs",
+    "helmholtz_m12_resample128": "m=12, long",
     "helmholtz_m7_rs": "m=7",
     "helmholtz_m8_rs": "m=8",
     "helmholtz_m10_resample128": "m=10",
     "helmholtz_m11_rs": "m=11",
-    "helmholtz_m12_long": "m=12",
-    "helmholtz_m12_rs": "m=12, rs",
-    "helmholtz_m12_resample128": "m=12, long",
 }
 
 
-def with_plot_names(df):
-    df = df.copy()
-    df["plot_name"] = df["case_id"].map(case_names).fillna(df["case_id"])
-    return df
+MAIN_HELMHOLTZ_IDS = {
+    "helmholtz_m12_long",
+    "helmholtz_m12_rs",
+    "helmholtz_m12_resample128",
+    "helmholtz_m7_rs",
+    "helmholtz_m11_rs",
+}
 
 
-def pretty_case_id(task, par, val, variant):
-    v = fmt(val).replace(".", "p")
-    if task == "helmholtz1d":
-        if variant == "helmholtz_resample_long":
-            return f"helmholtz_m{v}_long"
-        if variant == "resample_proven_128":
-            return f"helmholtz_m{v}_resample128"
-        if str(variant).startswith("helmholtz_rs_m"):
-            return f"helmholtz_m{v}_rs"
-        if variant == "helmholtz_main":
-            return f"helmholtz_m{v}_main_old"
-        return f"helmholtz_m{v}_{variant}"
-    if task == "burgers1d":
-        return f"burgers_nu{v.replace('0p00', '0p00')}"
-    if task == "convection1d":
-        return f"convection_beta{v}"
-    return f"{task_short(task)}_{par}{v}"
+TARGET_TABLES = {
+    "all_runs_normalized.csv",
+    "bad_runs.csv",
+    "task_overview.csv",
+    "fp32_fp64_comparison.csv",
+    "fp16_summary.csv",
+    "report_main_cases.csv",
+    "report_helmholtz_cases.csv",
+    "report_diagnostic_cases.csv",
+}
 
 
-def task_overview(runs):
+TARGET_FIGURES = {
+    "report_main_best_l2_by_dtype.png",
+    "report_main_fp64_fp32_ratio.png",
+    "report_main_seed_scatter.png",
+    "report_helmholtz_main_ratio.png",
+    "report_helmholtz_rs_sweep.png",
+    "report_helmholtz_m12_curves.png",
+    "report_convection_beta30_curves.png",
+    "report_burgers_summary.png",
+    "report_fp16_summary.png",
+    "report_diagnostic_seed_sensitive.png",
+}
+
+
+def clean_text(text):
+    return " ".join(str(text).replace("\n", " ").split())
+
+
+def to_float(x):
+    if x is None:
+        return np.nan
+    if isinstance(x, str):
+        x = x.strip()
+        if x == "" or x.lower() in {"none", "nan", "null"}:
+            return np.nan
+        x = x.replace(",", ".")
+    try:
+        return float(x)
+    except Exception:
+        return np.nan
+
+
+def to_int(x):
+    val = to_float(x)
+    if pd.isna(val):
+        return np.nan
+    return int(val)
+
+
+def fmt_num(x):
+    val = to_float(x)
+    if pd.isna(val):
+        return ""
+    if abs(val - round(val)) < 1e-10:
+        return str(int(round(val)))
+    return f"{val:.6g}"
+
+
+def same_num(a, b, eps=1e-9):
+    a = to_float(a)
+    b = to_float(b)
+    if pd.isna(a) and pd.isna(b):
+        return True
+    if pd.isna(a) or pd.isna(b):
+        return False
+    return abs(a - b) < eps
+
+
+def flatten_dict(d, prefix=""):
+    out = {}
+
+    if not isinstance(d, dict):
+        return out
+
+    for key, value in d.items():
+        name = f"{prefix}.{key}" if prefix else str(key)
+
+        if isinstance(value, dict):
+            out.update(flatten_dict(value, name))
+        else:
+            out[name] = value
+
+    return out
+
+
+def get_first(data, names, default=None):
+    for name in names:
+        if name in data and data[name] is not None:
+            return data[name]
+    return default
+
+
+def read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def parse_number(pattern, text):
+    match = re.search(pattern, text)
+    if not match:
+        return np.nan
+
+    raw = match.group(1)
+    raw = raw.replace("p", ".")
+    return to_float(raw)
+
+
+def infer_dtype(text):
+    text = text.lower()
+    match = re.search(r"fp(16|32|64)", text)
+    if match:
+        return "fp" + match.group(1)
+    return ""
+
+
+def infer_seed(text):
+    text = text.lower()
+
+    patterns = [
+        r"(?:seed|s)[_-]?(\d+)",
+        r"fp(?:16|32|64)[_-]?(\d+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return int(match.group(1))
+
+    return np.nan
+
+
+def infer_task(text):
+    text = text.lower()
+
+    if "helmholtz" in text:
+        return "helmholtz1d"
+    if "burgers" in text:
+        return "burgers1d"
+    if "convection" in text:
+        return "convection1d"
+    if "heat" in text:
+        return "heat1d"
+
+    return ""
+
+
+def infer_parameter(task_name, text):
+    text = text.lower()
+
+    if task_name == "helmholtz1d":
+        value = parse_number(r"(?:^|[_/\-])m([0-9]+(?:p[0-9]+|\.[0-9]+)?)", text)
+        return "m", value
+
+    if task_name == "burgers1d":
+        value = parse_number(r"nu[_=\-]?([0-9]+(?:p[0-9]+|\.[0-9]+)?)", text)
+        return "nu", value
+
+    if task_name == "convection1d":
+        value = parse_number(r"beta[_=\-]?([0-9]+(?:p[0-9]+|\.[0-9]+)?)", text)
+        return "beta", value
+
+    if task_name == "heat1d":
+        value = parse_number(r"alpha[_=\-]?([0-9]+(?:p[0-9]+|\.[0-9]+)?)", text)
+        if pd.isna(value):
+            value = 0.1
+        return "alpha", value
+
+    return "", np.nan
+
+
+def infer_variant(task_name, parameter_value, text):
+    text = text.lower()
+
+    if task_name == "heat1d":
+        return "heat1d"
+
+    if task_name == "helmholtz1d":
+        m = int(parameter_value) if pd.notna(parameter_value) else None
+
+        if "helmholtz_resample_long" in text:
+            return "helmholtz_resample_long"
+        if "resample_proven_128" in text:
+            return "resample_proven_128"
+        if "helmholtz_rs_m" in text and m is not None:
+            return f"helmholtz_rs_m{m}"
+        if "helmholtz_main" in text:
+            return "helmholtz_main"
+        if m is not None:
+            return f"helmholtz_m{m}"
+
+    if task_name == "burgers1d":
+        if "burgers_more_points" in text:
+            return "burgers_more_points"
+        if "low_nu" in text:
+            return "burgers_low_nu"
+        return "burgers"
+
+    if task_name == "convection1d":
+        if "convection_beta30_lbfgs_grid" in text:
+            return "convection_beta30_lbfgs_grid"
+        if "convection_beta50_wide_lbfgs" in text:
+            return "convection_beta50_wide_lbfgs"
+        return "convection"
+
+    return "unknown"
+
+
+def read_metrics(run_dir):
+    path = run_dir / "metrics.csv"
+    if not path.exists():
+        return None, None
+
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return None, path
+
+    return df, path
+
+
+def find_metric_col(df, words):
+    if df is None or df.empty:
+        return None
+
+    for col in df.columns:
+        low = str(col).lower()
+        if low in words:
+            return col
+
+    for col in df.columns:
+        low = str(col).lower()
+        for word in words:
+            if word in low:
+                return col
+
+    return None
+
+
+def metric_min(df, words):
+    col = find_metric_col(df, words)
+    if col is None:
+        return np.nan
+
+    vals = pd.to_numeric(df[col], errors="coerce")
+    if vals.notna().sum() == 0:
+        return np.nan
+
+    return vals.min()
+
+
+def metric_last(df, words):
+    col = find_metric_col(df, words)
+    if col is None:
+        return np.nan
+
+    vals = pd.to_numeric(df[col], errors="coerce").dropna()
+    if len(vals) == 0:
+        return np.nan
+
+    return vals.iloc[-1]
+
+
+def get_setting(flat, names):
+    return get_first(flat, names, np.nan)
+
+
+def run_from_summary(path):
+    data = read_json(path)
+    if data is None:
+        return None
+
+    run_dir = path.parent
+    rel_run = run_dir.relative_to(ROOT)
+    text = str(rel_run).lower()
+
+    flat = flatten_dict(data)
+
+    task_name = get_first(
+        flat,
+        ["task_name", "config.task_name", "params.task_name", "task"],
+        "",
+    )
+    if not task_name:
+        task_name = infer_task(text)
+
+    dtype = get_first(
+        flat,
+        ["dtype", "config.dtype", "params.dtype"],
+        "",
+    )
+    if not dtype:
+        dtype = infer_dtype(text)
+    dtype = str(dtype).lower()
+
+    seed = get_first(
+        flat,
+        ["seed", "config.seed", "params.seed"],
+        np.nan,
+    )
+    seed = to_int(seed)
+    if pd.isna(seed):
+        seed = infer_seed(text)
+
+    if task_name == "helmholtz1d":
+        par_name = "m"
+        par_value = get_first(flat, ["m", "config.m", "params.m"], np.nan)
+    elif task_name == "burgers1d":
+        par_name = "nu"
+        par_value = get_first(flat, ["nu", "config.nu", "params.nu"], np.nan)
+    elif task_name == "convection1d":
+        par_name = "beta"
+        par_value = get_first(flat, ["beta", "config.beta", "params.beta"], np.nan)
+    elif task_name == "heat1d":
+        par_name = "alpha"
+        par_value = get_first(flat, ["alpha", "config.alpha", "params.alpha"], np.nan)
+    else:
+        par_name = ""
+        par_value = np.nan
+
+    par_value = to_float(par_value)
+    if not par_name or pd.isna(par_value):
+        par_name, par_value = infer_parameter(task_name, text)
+
+    variant = get_first(
+        flat,
+        ["variant", "config.variant", "experiment", "experiment_name", "run_name"],
+        "",
+    )
+    if not variant:
+        variant = infer_variant(task_name, par_value, text)
+
+    metrics, metrics_path = read_metrics(run_dir)
+
+    best_l2 = get_first(
+        flat,
+        [
+            "best_l2_error",
+            "best_l2",
+            "min_l2_error",
+            "best_relative_l2",
+            "metrics.best_l2_error",
+            "result.best_l2_error",
+        ],
+        np.nan,
+    )
+    best_l2 = to_float(best_l2)
+    if pd.isna(best_l2):
+        best_l2 = metric_min(metrics, {"l2_error", "relative_l2_error", "rel_l2_error"})
+
+    final_l2 = get_first(
+        flat,
+        [
+            "final_l2_error",
+            "l2_error",
+            "relative_l2_error",
+            "metrics.final_l2_error",
+            "result.final_l2_error",
+        ],
+        np.nan,
+    )
+    final_l2 = to_float(final_l2)
+    if pd.isna(final_l2):
+        final_l2 = metric_last(metrics, {"l2_error", "relative_l2_error", "rel_l2_error"})
+
+    final_loss = get_first(
+        flat,
+        ["final_loss", "loss", "metrics.final_loss", "result.final_loss"],
+        np.nan,
+    )
+    final_loss = to_float(final_loss)
+    if pd.isna(final_loss):
+        final_loss = metric_last(metrics, {"total_loss", "loss"})
+
+    row = {
+        "source_path": str(rel_run),
+        "summary_path": str(path.relative_to(ROOT)),
+        "metrics_path": str(metrics_path.relative_to(ROOT)) if metrics_path else "",
+        "task_name": task_name,
+        "variant": str(variant),
+        "dtype": dtype,
+        "seed": seed,
+        "main_parameter_name": par_name,
+        "main_parameter_value": par_value,
+        "best_l2_error": best_l2,
+        "final_l2_error": final_l2,
+        "final_loss": final_loss,
+        "hid_size": to_float(get_setting(flat, ["hid_size", "config.hid_size", "hidden_size", "config.hidden_size"])),
+        "num_layers": to_float(get_setting(flat, ["num_layers", "config.num_layers"])),
+        "n_collocation": to_float(get_setting(flat, ["n_collocation", "config.n_collocation"])),
+        "n_ic": to_float(get_setting(flat, ["n_ic", "config.n_ic"])),
+        "n_bc": to_float(get_setting(flat, ["n_bc", "config.n_bc"])),
+        "adam_steps": to_float(get_setting(flat, ["adam_steps", "config.adam_steps"])),
+        "lbfgs_steps": to_float(get_setting(flat, ["lbfgs_steps", "config.lbfgs_steps"])),
+        "lr_adam": to_float(get_setting(flat, ["lr_adam", "config.lr_adam"])),
+        "lbfgs_lr": to_float(get_setting(flat, ["lbfgs_lr", "config.lbfgs_lr"])),
+        "resample_every": to_float(get_setting(flat, ["resample_every", "config.resample_every"])),
+    }
+
+    row["is_valid"] = bool(np.isfinite(row["best_l2_error"]))
+    row["is_bad"] = bool((not row["is_valid"]) or row["best_l2_error"] > BAD_L2_THRESHOLD)
+
+    return row
+
+
+def read_runs():
+    files = list(RAW_DIR.rglob("summary.json"))
+
+    if not files:
+        files = [p for p in RAW_DIR.rglob("*.json") if "summary" in p.name.lower()]
+
     rows = []
-    keys = ["task_name", "main_parameter_name", "main_parameter_value", "dtype"]
-    for vals, cur in runs.groupby(keys, dropna=False):
+    for path in files:
+        row = run_from_summary(path)
+        if row is not None:
+            rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    if df.empty:
+        return df
+
+    df = df.sort_values(["task_name", "main_parameter_value", "variant", "dtype", "seed"])
+    return df.reset_index(drop=True)
+
+
+def make_case_key(row):
+    keys = [
+        "task_name",
+        "variant",
+        "main_parameter_name",
+        "main_parameter_value",
+        "hid_size",
+        "num_layers",
+        "n_collocation",
+        "n_ic",
+        "n_bc",
+        "adam_steps",
+        "lbfgs_steps",
+        "lr_adam",
+        "lbfgs_lr",
+        "resample_every",
+    ]
+
+    parts = []
+    for key in keys:
+        value = row.get(key, np.nan)
+        if isinstance(value, float):
+            value = fmt_num(value)
+        parts.append(str(value))
+
+    return "|".join(parts)
+
+
+def make_task_overview(runs):
+    if runs.empty:
+        return pd.DataFrame()
+
+    rows = []
+    group_cols = ["task_name", "main_parameter_name", "main_parameter_value", "dtype"]
+
+    for values, cur in runs.groupby(group_cols, dropna=False):
         valid = cur[cur["is_valid"]].copy()
         best = pd.to_numeric(valid["best_l2_error"], errors="coerce")
+
         rows.append({
-            "task_name": vals[0],
-            "main_parameter_name": vals[1],
-            "main_parameter_value": vals[2],
-            "dtype": vals[3],
+            "task_name": values[0],
+            "main_parameter_name": values[1],
+            "main_parameter_value": values[2],
+            "dtype": values[3],
             "n_total": len(cur),
             "n_valid": int(cur["is_valid"].sum()),
             "n_bad": int(cur["is_bad"].sum()),
+            "bad_rate": float(cur["is_bad"].mean()) if len(cur) else np.nan,
             "median_best_l2": best.median(),
             "mean_best_l2": best.mean(),
             "min_best_l2": best.min(),
             "max_best_l2": best.max(),
-            "bad_rate": float(cur["is_bad"].mean()) if len(cur) else np.nan,
         })
+
     df = pd.DataFrame(rows)
-    return df.sort_values(["task_name", "main_parameter_name", "main_parameter_value", "dtype"])
+    return df.sort_values(["task_name", "main_parameter_value", "dtype"])
 
 
-def pick_case(comp, task, par, val, variant):
+def make_fp32_fp64_comparison(runs):
+    if runs.empty:
+        return pd.DataFrame()
+
+    cur = runs[runs["dtype"].isin(["fp32", "fp64"])].copy()
+    if cur.empty:
+        return pd.DataFrame()
+
+    cur["case_key"] = cur.apply(make_case_key, axis=1)
+
+    rows = []
+    for case_key, part in cur.groupby("case_key"):
+        base = part.iloc[0]
+
+        row = {
+            "case_key": case_key,
+            "task_name": base["task_name"],
+            "variant": base["variant"],
+            "main_parameter_name": base["main_parameter_name"],
+            "main_parameter_value": base["main_parameter_value"],
+            "hid_size": base["hid_size"],
+            "num_layers": base["num_layers"],
+            "n_collocation": base["n_collocation"],
+            "n_ic": base["n_ic"],
+            "n_bc": base["n_bc"],
+            "adam_steps": base["adam_steps"],
+            "lbfgs_steps": base["lbfgs_steps"],
+            "lr_adam": base["lr_adam"],
+            "lbfgs_lr": base["lbfgs_lr"],
+            "resample_every": base["resample_every"],
+        }
+
+        for dtype in ["fp32", "fp64"]:
+            d = part[part["dtype"] == dtype]
+            valid = d[d["is_valid"]]
+            best = pd.to_numeric(valid["best_l2_error"], errors="coerce")
+
+            row[f"{dtype}_n_total"] = len(d)
+            row[f"{dtype}_n_valid"] = int(d["is_valid"].sum())
+            row[f"{dtype}_n_bad"] = int(d["is_bad"].sum())
+            row[f"{dtype}_bad_rate"] = float(d["is_bad"].mean()) if len(d) else np.nan
+            row[f"{dtype}_median_best_l2"] = best.median()
+            row[f"{dtype}_min_best_l2"] = best.min()
+            row[f"{dtype}_max_best_l2"] = best.max()
+            row[f"{dtype}_source_paths"] = "; ".join(d["source_path"].astype(str))
+
+        a = row.get("fp32_median_best_l2", np.nan)
+        b = row.get("fp64_median_best_l2", np.nan)
+        row["fp64_over_fp32_median"] = b / a if pd.notna(a) and a != 0 else np.nan
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    return df.sort_values(["task_name", "main_parameter_value", "variant"])
+
+
+def pick_case(comp, task, par_name, par_value, variant=None):
+    if comp.empty:
+        return None
+
     cur = comp[
         (comp["task_name"] == task)
-        & (comp["main_parameter_name"] == par)
-        & (comp["variant"] == variant)
+        & (comp["main_parameter_name"] == par_name)
     ].copy()
-    cur = cur[cur["main_parameter_value"].map(lambda x: same_num(x, val))]
-    if len(cur) == 0:
+
+    cur = cur[cur["main_parameter_value"].map(lambda x: same_num(x, par_value))]
+
+    if variant is not None:
+        exact = cur[cur["variant"] == variant].copy()
+        if not exact.empty:
+            cur = exact
+
+    if cur.empty:
         return None
+
     cur = cur.sort_values(
-        ["fp32_n_valid", "fp64_n_valid", "fp64_over_fp32_median"],
-        ascending=[False, False, True],
+        [
+            "fp32_n_valid",
+            "fp64_n_valid",
+            "fp32_bad_rate",
+            "fp64_bad_rate",
+            "fp64_over_fp32_median",
+        ],
+        ascending=[False, False, True, True, True],
     )
+
     return cur.iloc[0]
 
 
-def case_runs(runs, row):
-    cur = runs[
-        (runs["task_name"] == row["task_name"])
-        & (runs["variant"] == row["variant"])
-        & (runs["main_parameter_name"] == row["main_parameter_name"])
-    ].copy()
-    cur = cur[cur["main_parameter_value"].map(lambda x: same_num(x, row["main_parameter_value"]))]
-    cols = [
-        "hid_size", "num_layers", "n_collocation", "n_ic", "n_bc", "adam_steps",
-        "lr_adam", "lbfgs_steps", "lbfgs_lr", "lbfgs_max_iter", "resample_every",
-    ]
-    for col in cols:
-        if col in cur.columns and col in row:
-            cur = cur[cur[col].map(lambda x: same_num(x, row[col]))]
-    return cur[cur["dtype"].isin(["fp32", "fp64"])]
+def case_id_from_row(row):
+    task = row["task_name"]
+    value = row["main_parameter_value"]
+    variant = row["variant"]
+
+    if task == "heat1d":
+        return "heat_alpha01"
+
+    if task == "helmholtz1d":
+        m = fmt_num(value)
+
+        if variant == "helmholtz_resample_long":
+            return f"helmholtz_m{m}_long"
+        if variant == "resample_proven_128":
+            return f"helmholtz_m{m}_resample128"
+        if str(variant).startswith("helmholtz_rs_m"):
+            return f"helmholtz_m{m}_rs"
+        if variant == "helmholtz_main":
+            return f"helmholtz_m{m}_main_old"
+
+        return f"helmholtz_m{m}"
+
+    if task == "convection1d":
+        return f"convection_beta{fmt_num(value)}"
+
+    if task == "burgers1d":
+        value = fmt_num(value).replace(".", "p")
+        return f"burgers_nu{value}"
+
+    return f"{task}_{fmt_num(value)}"
 
 
-def from_comp(row, runs, label, status, comment, case_id=None):
-    cur = case_runs(runs, row)
+def row_to_report(row, label, status, comment, case_id=None):
     if case_id is None:
-        case_id = pretty_case_id(
-            row["task_name"],
-            row["main_parameter_name"],
-            row["main_parameter_value"],
-            row["variant"],
-        )
+        case_id = case_id_from_row(row)
+
+    src = []
+    for dtype in ["fp32", "fp64"]:
+        text = row.get(f"{dtype}_source_paths", "")
+        if isinstance(text, str) and text:
+            src.append(text)
+
     return {
         "case_id": case_id,
         "task": row["task_name"],
-        "parameter": f"{row['main_parameter_name']}={fmt(row['main_parameter_value'])}",
+        "parameter": f"{row['main_parameter_name']}={fmt_num(row['main_parameter_value'])}",
         "variant": row["variant"],
         "dtype_comparison": "FP32 vs FP64",
-        "n_seed_fp32": int(row["fp32_n_valid"]) if pd.notna(row["fp32_n_valid"]) else np.nan,
-        "n_seed_fp64": int(row["fp64_n_valid"]) if pd.notna(row["fp64_n_valid"]) else np.nan,
-        "fp32_median_best_l2": row["fp32_median_best_l2"],
-        "fp64_median_best_l2": row["fp64_median_best_l2"],
-        "ratio": row["fp64_over_fp32_median"],
-        "bad_rate_fp32": row["fp32_bad_rate"],
-        "bad_rate_fp64": row["fp64_bad_rate"],
+        "n_seed_fp32": row.get("fp32_n_valid", np.nan),
+        "n_seed_fp64": row.get("fp64_n_valid", np.nan),
+        "fp32_median_best_l2": row.get("fp32_median_best_l2", np.nan),
+        "fp64_median_best_l2": row.get("fp64_median_best_l2", np.nan),
+        "ratio": row.get("fp64_over_fp32_median", np.nan),
+        "bad_rate_fp32": row.get("fp32_bad_rate", np.nan),
+        "bad_rate_fp64": row.get("fp64_bad_rate", np.nan),
         "label": label,
         "status": status,
         "comment": clean_text(comment),
-        "source_paths": "; ".join(cur["source_path"].astype(str).tolist()),
+        "source_paths": "; ".join(src),
         "case_key": row.get("case_key", ""),
     }
 
 
-def heat_case(overview, runs):
-    cur = overview[(overview["task_name"] == "heat1d") & (overview["dtype"].isin(["fp32", "fp64"]))]
+def make_heat_case(overview, runs):
+    cur = overview[
+        (overview["task_name"] == "heat1d")
+        & (overview["dtype"].isin(["fp32", "fp64"]))
+    ]
+
     fp32 = cur[cur["dtype"] == "fp32"]
     fp64 = cur[cur["dtype"] == "fp64"]
+
     if fp32.empty or fp64.empty:
         return None
+
     a = fp32.iloc[0]
     b = fp64.iloc[0]
     ratio = b["median_best_l2"] / a["median_best_l2"] if a["median_best_l2"] else np.nan
+
     src = runs[runs["task_name"] == "heat1d"]["source_path"].astype(str).tolist()
+
     return {
         "case_id": "heat_alpha01",
         "task": "heat1d",
@@ -223,15 +727,43 @@ def heat_case(overview, runs):
         "bad_rate_fp64": b["bad_rate"],
         "label": "проверка",
         "status": "основной отчёт",
-        "comment": "На простой heat-задаче обе точности работают хорошо. Это простая проверка всей схемы обучения.",
+        "comment": "На простой heat-задаче обе точности работают хорошо; это проверка всей схемы обучения.",
         "source_paths": "; ".join(src),
         "case_key": "",
     }
 
 
-def fp16_case(fp16):
-    total = int(fp16["n_total"].sum()) if len(fp16) else 0
-    bad = int(fp16["n_bad"].sum()) if len(fp16) else 0
+def make_fp16_table(overview):
+    if overview.empty:
+        return pd.DataFrame()
+
+    fp16 = overview[overview["dtype"] == "fp16"].copy()
+    if fp16.empty:
+        return pd.DataFrame()
+
+    cols = [
+        "task_name",
+        "main_parameter_name",
+        "main_parameter_value",
+        "n_total",
+        "n_valid",
+        "n_bad",
+        "bad_rate",
+        "median_best_l2",
+        "min_best_l2",
+        "max_best_l2",
+    ]
+
+    return fp16[cols].sort_values(["task_name", "main_parameter_value"])
+
+
+def make_fp16_case(fp16_table):
+    if fp16_table.empty:
+        return None
+
+    total = int(fp16_table["n_total"].sum())
+    bad = int(fp16_table["n_bad"].sum())
+
     return {
         "case_id": "fp16_summary",
         "task": "fp16",
@@ -253,595 +785,488 @@ def fp16_case(fp16):
     }
 
 
-def make_helmholtz_cases(comp, runs):
+def make_helmholtz_cases(comp):
     specs = [
-        (12, "helmholtz_resample_long", "helmholtz_m12_long", "главный положительный пример",
-         "В этом запуске есть по два валидных seed, и медиана FP64 заметно ниже медианы FP32."),
-        (12, "helmholtz_rs_m12", "helmholtz_m12_rs", "дополнительный чистый пример",
-         "Ещё один устойчивый m=12 с ресемплированием. FP64 снова даёт меньшую медианную ошибку."),
-        (12, "resample_proven_128", "helmholtz_m12_resample128", "дополнительный чистый пример",
-         "Похожая настройка с более длинным L-BFGS. Вывод совпадает с основным m=12."),
-        (7, "helmholtz_rs_m7", "helmholtz_m7_rs", "положительный пример",
-         "На меньшем m результат тоже чистый: оба dtype имеют по два валидных seed."),
-        (8, "helmholtz_rs_m8", "helmholtz_m8_rs", "положительный пример",
-         "Это не старый unstable m=8, а более аккуратный rs-запуск без плохих seed."),
-        (11, "helmholtz_rs_m11", "helmholtz_m11_rs", "умеренно положительный пример",
-         "FP64 лучше по медиане, но отрыв меньше, чем на m=12."),
-        (10, "resample_proven_128", "helmholtz_m10_resample128", "умеренный пример",
-         "Можно использовать как вспомогательный пример: FP64 лучше не так резко."),
-        (10, "helmholtz_m10", "helmholtz_m10_initial", "умеренный пример",
-         "Старый запуск m=10 полезен как дополнительная проверка, но не главный результат."),
+        (12, "helmholtz_resample_long", "helmholtz_m12_long", "главный положительный пример", "основной Helmholtz", "В этом запуске есть по два валидных seed; медиана FP64 заметно ниже медианы FP32."),
+        (12, "helmholtz_rs_m12", "helmholtz_m12_rs", "дополнительный чистый пример", "основной Helmholtz", "Ещё один устойчивый m=12 с ресемплированием; FP64 снова даёт меньшую медианную ошибку."),
+        (12, "resample_proven_128", "helmholtz_m12_resample128", "дополнительный чистый пример", "основной Helmholtz", "Похожая настройка с более длинным L-BFGS; вывод совпадает с основным m=12."),
+        (7, "helmholtz_rs_m7", "helmholtz_m7_rs", "положительный пример", "дополнительный Helmholtz", "На меньшем m результат тоже чистый: оба dtype имеют по два валидных seed."),
+        (8, "helmholtz_rs_m8", "helmholtz_m8_rs", "положительный пример", "дополнительный Helmholtz", "Это не старый unstable m=8, а более аккуратный rs-запуск без плохих seed."),
+        (10, "resample_proven_128", "helmholtz_m10_resample128", "умеренный пример", "дополнительный Helmholtz", "Вспомогательный Helmholtz-кейс: FP64 лучше, но не так резко, как на m=12."),
+        (11, "helmholtz_rs_m11", "helmholtz_m11_rs", "умеренно положительный пример", "дополнительный Helmholtz", "FP64 лучше по медиане, но отрыв меньше, чем на m=12."),
     ]
+
     rows = []
-    for m, variant, case_id, label, comment in specs:
+
+    for m, variant, case_id, label, status, comment in specs:
         row = pick_case(comp, "helmholtz1d", "m", m, variant)
         if row is None:
             continue
-        ok_seed = row["fp32_n_valid"] >= 2 and row["fp64_n_valid"] >= 2
-        ok_bad = row["fp32_bad_rate"] < 0.5 and row["fp64_bad_rate"] < 0.5
-        if not ok_seed or not ok_bad:
+
+        enough_seeds = row["fp32_n_valid"] >= 2 and row["fp64_n_valid"] >= 2
+        clean_bad_rate = row["fp32_bad_rate"] < 0.5 and row["fp64_bad_rate"] < 0.5
+
+        if not enough_seeds or not clean_bad_rate:
             continue
-        status = "основной Helmholtz" if m == 12 else "дополнительный Helmholtz"
-        rows.append(from_comp(row, runs, label, status, comment, case_id=case_id))
+
+        rows.append(row_to_report(row, label, status, comment, case_id=case_id))
+
     return pd.DataFrame(rows)
 
 
-def make_cases(comp, overview, fp16, runs):
-    main = []
-    diag = []
+def make_report_tables(comp, overview, runs):
+    main_rows = []
+    diag_rows = []
 
-    h = heat_case(overview, runs)
-    if h is not None:
-        main.append(h)
+    heat = make_heat_case(overview, runs)
+    if heat is not None:
+        main_rows.append(heat)
 
-    helm = make_helmholtz_cases(comp, runs)
-    if len(helm):
-        main_helm_ids = [
-            "helmholtz_m12_long",
-            "helmholtz_m12_rs",
-            "helmholtz_m12_resample128",
-            "helmholtz_m7_rs",
-            "helmholtz_m11_rs",
-        ]
+    helm = make_helmholtz_cases(comp)
+    if not helm.empty:
         for _, row in helm.iterrows():
-            if row["case_id"] in main_helm_ids:
-                main.append(row.to_dict())
+            if row["case_id"] in MAIN_HELMHOLTZ_IDS:
+                main_rows.append(row.to_dict())
 
-    picks = [
-        ("convection1d", "beta", 30, "convection_beta30_lbfgs_grid", "аккуратный пример convection", "основной отчёт",
-         "Есть по два seed у FP32 и FP64. FP64 лучше умеренно, без истории про полный провал FP32."),
-        ("burgers1d", "nu", 0.002, "burgers_more_points", "результаты близкие", "основной отчёт",
-         "Burgers nu=0.002 показывает близкие результаты FP32 и FP64."),
-        ("burgers1d", "nu", 0.001, "burgers_more_points", "смешанный результат", "основной отчёт",
-         "На этом Burgers-запуске FP64 не даёт устойчивого преимущества. Это полезный отрицательный пример."),
+    main_specs = [
+        ("convection1d", "beta", 30, "convection_beta30_lbfgs_grid", "convection_beta30", "аккуратный пример convection", "основной отчёт", "Есть по два seed у FP32 и FP64; FP64 лучше умеренно, без истории про полный провал FP32."),
+        ("burgers1d", "nu", 0.002, "burgers_more_points", "burgers_nu0p002", "результаты близкие", "основной отчёт", "Burgers nu=0.002 показывает близкие результаты FP32 и FP64."),
+        ("burgers1d", "nu", 0.001, "burgers_more_points", "burgers_nu0p001", "смешанный результат", "основной отчёт", "На этом Burgers-запуске FP64 не даёт устойчивого преимущества; это полезный отрицательный пример."),
     ]
-    for task, par, val, variant, label, status, comment in picks:
-        row = pick_case(comp, task, par, val, variant)
+
+    for task, par, value, variant, case_id, label, status, comment in main_specs:
+        row = pick_case(comp, task, par, value, variant)
         if row is not None:
-            main.append(from_comp(row, runs, label, status, comment))
+            main_rows.append(row_to_report(row, label, status, comment, case_id=case_id))
 
-    if len(fp16):
-        main.append(fp16_case(fp16))
+    fp16_table = make_fp16_table(overview)
+    fp16_case = make_fp16_case(fp16_table)
+    if fp16_case is not None:
+        main_rows.append(fp16_case)
 
-    diag_picks = [
-        ("convection1d", "beta", 50, "convection_beta50_wide_lbfgs", "требует проверки", "диагностика",
-         "FP64 выглядит сильно лучше, но здесь только один seed. FP32 мог не сойтись из-за неудачного старта, поэтому кейс нельзя делать главным выводом."),
-        ("helmholtz1d", "m", 8, "helmholtz_main", "зависит от seed", "диагностика",
-         "Старый m=8 показывает сильную зависимость от seed. Его полезно оставить как пример нестабильности."),
-        ("helmholtz1d", "m", 15, "helmholtz_m15", "сложный режим", "диагностика",
-         "При большем m обе точности часто не сходились. Это уже скорее граница выбранной схемы обучения."),
+    diag_specs = [
+        ("convection1d", "beta", 50, "convection_beta50_wide_lbfgs", "convection_beta50", "требует проверки", "диагностика", "FP64 выглядит сильно лучше, но здесь только один seed; FP32 мог не сойтись из-за неудачного старта, поэтому кейс нельзя делать главным выводом."),
+        ("helmholtz1d", "m", 8, "helmholtz_main", "helmholtz_m8_main_old", "зависит от seed", "диагностика", "Старый m=8 показывает сильную зависимость от seed; его лучше обсуждать отдельно от основного Helmholtz-блока."),
+        ("helmholtz1d", "m", 15, "helmholtz_m15", "helmholtz_m15_hard", "сложный режим", "диагностика", "При большем m обе точности часто не сходились; это скорее граница текущей схемы обучения."),
     ]
-    for task, par, val, variant, label, status, comment in diag_picks:
-        row = pick_case(comp, task, par, val, variant)
+
+    for task, par, value, variant, case_id, label, status, comment in diag_specs:
+        row = pick_case(comp, task, par, value, variant)
         if row is not None:
-            diag.append(from_comp(row, runs, label, status, comment))
+            diag_rows.append(row_to_report(row, label, status, comment, case_id=case_id))
 
-    main = pd.DataFrame(main)
-    diag = pd.DataFrame(diag)
-    all_cases = pd.concat([main, diag], ignore_index=True)
-    return main, helm, diag, all_cases
+    main = pd.DataFrame(main_rows)
+    diag = pd.DataFrame(diag_rows)
+
+    return main, helm, diag, fp16_table
 
 
-def archive_old_figures():
-    archive = fig_dir / "archive"
-    archive.mkdir(exist_ok=True)
-    names = [
-        "fp32_fp64_median_best_l2.png",
-        "fp64_over_fp32_ratio.png",
-        "seed_scatter_best_l2.png",
-        "report_best_l2_by_dtype.png",
-        "report_fp64_fp32_ratio.png",
-        "report_seed_scatter.png",
-        "report_convection_beta50_curves.png",
-        "report_convection_beta50_check.png",
-        "report_helmholtz_main_ratio.png",
-        "report_burgers_nu0002_curves.png",
-        "report_task_overview.png",
-    ]
-    for p in fig_dir.glob("curves_*.png"):
-        names.append(p.name)
-    for name in sorted(set(names)):
-        src = fig_dir / name
-        if src.exists():
-            dst = archive / name
+def save_csv(df, path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+
+
+def archive_old_outputs():
+    TABLE_DIR.mkdir(parents=True, exist_ok=True)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    table_archive = TABLE_DIR / "archive"
+    fig_archive = FIG_DIR / "archive"
+    table_archive.mkdir(exist_ok=True)
+    fig_archive.mkdir(exist_ok=True)
+
+    for path in TABLE_DIR.glob("*.csv"):
+        if path.name not in TARGET_TABLES:
+            dst = table_archive / path.name
             if dst.exists():
                 dst.unlink()
-            shutil.move(str(src), str(dst))
+            shutil.move(str(path), str(dst))
 
-
-def archive_old_tables():
-    archive = table_dir / "archive"
-    archive.mkdir(exist_ok=True)
-    names = [
-        "all_runs_raw.csv",
-        "grouped_by_dtype.csv",
-        "mixed_cases.csv",
-        "stable_fp64_better_cases.csv",
-        "unstable_cases.csv",
-        "selected_cases.csv",
-        "report_cases.csv",
-        "run_quality.csv",
-        "valid_runs.csv",
-    ]
-    for name in names:
-        src = table_dir / name
-        if src.exists():
-            dst = archive / name
+    for path in FIG_DIR.glob("*.png"):
+        if path.name not in TARGET_FIGURES:
+            dst = fig_archive / path.name
             if dst.exists():
                 dst.unlink()
-            shutil.move(str(src), str(dst))
+            shutil.move(str(path), str(dst))
+
+
+def add_plot_names(df, mapping=None):
+    if df.empty:
+        return df
+
+    df = df.copy()
+    if mapping is None:
+        mapping = CASE_NAMES
+
+    df["plot_name"] = df["case_id"].map(mapping).fillna(df["case_id"])
+    return df
 
 
 def plot_main_bars(main):
     cur = main.dropna(subset=["fp32_median_best_l2", "fp64_median_best_l2"]).copy()
     cur = cur[cur["case_id"] != "fp16_summary"]
-    cur = with_plot_names(cur)
+    cur = add_plot_names(cur)
+
     if cur.empty:
         return
+
     x = np.arange(len(cur))
-    fig, ax = plt.subplots(figsize=(max(9, len(cur) * 0.95), 4.8))
+
+    fig, ax = plt.subplots(figsize=(max(9, len(cur) * 1.15), 4.8))
     ax.bar(x - 0.18, cur["fp32_median_best_l2"], width=0.36, label="FP32")
     ax.bar(x + 0.18, cur["fp64_median_best_l2"], width=0.36, label="FP64")
+
     ax.set_yscale("log")
     ax.set_xticks(x)
     ax.set_xticklabels(cur["plot_name"], rotation=30, ha="right")
     ax.set_ylabel("Best L2 error")
-    ax.set_title("Median best L2 by dtype")
-    ax.text(0.99, 0.95, "lower is better", transform=ax.transAxes, ha="right", va="top")
+    ax.set_title("Main cases: median best L2")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
+
     fig.tight_layout()
-    fig.savefig(fig_dir / "report_main_best_l2_by_dtype.png", dpi=180)
+    fig.savefig(FIG_DIR / "report_main_best_l2_by_dtype.png", dpi=180)
     plt.close(fig)
 
 
 def plot_main_ratio(main):
     cur = main.dropna(subset=["ratio"]).copy()
     cur = cur[cur["case_id"] != "fp16_summary"]
-    cur = with_plot_names(cur)
+    cur = add_plot_names(cur)
+
     if cur.empty:
         return
-    fig, ax = plt.subplots(figsize=(max(9, len(cur) * 0.95), 4.2))
+
+    fig, ax = plt.subplots(figsize=(max(9, len(cur) * 1.15), 4.3))
     ax.bar(range(len(cur)), cur["ratio"])
-    ax.axhline(1.0, color="black", linewidth=1)
+    ax.axhline(1.0, linewidth=1)
+
     ax.set_yscale("log")
     ax.set_xticks(range(len(cur)))
     ax.set_xticklabels(cur["plot_name"], rotation=30, ha="right")
     ax.set_ylabel("FP64 / FP32 median best L2")
-    ax.set_title("FP64 / FP32 median best L2")
-    ax.text(0.99, 0.95, "lower is better", transform=ax.transAxes, ha="right", va="top")
+    ax.set_title("Main cases: FP64 to FP32 error ratio")
     ax.grid(True, axis="y", alpha=0.3)
+
     fig.tight_layout()
-    fig.savefig(fig_dir / "report_main_fp64_fp32_ratio.png", dpi=180)
+    fig.savefig(FIG_DIR / "report_main_fp64_fp32_ratio.png", dpi=180)
     plt.close(fig)
 
 
 def plot_helmholtz_ratio(helm):
     cur = helm.dropna(subset=["ratio"]).copy()
-    cur["plot_name"] = cur["case_id"].map(helmholtz_names).fillna(cur["case_id"])
+    cur = add_plot_names(cur, HELMHOLTZ_NAMES)
+
     if cur.empty:
         return
-    fig, ax = plt.subplots(figsize=(max(8, len(cur) * 1.0), 4.2))
-    ax.bar(range(len(cur)), cur["ratio"], color="#4c78a8")
-    ax.axhline(1.0, color="black", linewidth=1)
+
+    fig, ax = plt.subplots(figsize=(max(8, len(cur) * 1.0), 4.3))
+    ax.bar(range(len(cur)), cur["ratio"])
+    ax.axhline(1.0, linewidth=1)
+
     ax.set_yscale("log")
     ax.set_xticks(range(len(cur)))
     ax.set_xticklabels(cur["plot_name"], rotation=25, ha="right")
     ax.set_ylabel("FP64 / FP32 median best L2")
     ax.set_title("Helmholtz selected runs")
-    ax.text(0.99, 0.95, "lower is better", transform=ax.transAxes, ha="right", va="top")
     ax.grid(True, axis="y", alpha=0.3)
+
     fig.tight_layout()
-    fig.savefig(fig_dir / "report_helmholtz_ratio.png", dpi=180)
+    fig.savefig(FIG_DIR / "report_helmholtz_main_ratio.png", dpi=180)
     plt.close(fig)
 
 
 def plot_helmholtz_sweep(helm):
-    cur = helm.copy()
+    cur = helm.dropna(subset=["ratio"]).copy()
     if cur.empty:
         return
+
     cur["m"] = cur["parameter"].str.extract(r"m=([0-9.]+)").astype(float)
-    cur["plot_name"] = cur["case_id"].map(helmholtz_names).fillna(cur["case_id"])
-    cur = cur.sort_values(["m", "variant"])
-    fig, ax = plt.subplots(figsize=(8.5, 4.2))
-    ax.scatter(cur["m"], cur["ratio"], s=70, color="#f58518")
+    cur = cur.sort_values(["m", "case_id"])
+    cur = add_plot_names(cur, HELMHOLTZ_NAMES)
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.3))
+    ax.scatter(cur["m"], cur["ratio"], s=70)
+
     for _, row in cur.iterrows():
         ax.text(row["m"], row["ratio"] * 1.08, row["plot_name"], fontsize=8, ha="center")
-    ax.axhline(1.0, color="black", linewidth=1)
+
+    ax.axhline(1.0, linewidth=1)
     ax.set_yscale("log")
     ax.set_xlabel("m")
     ax.set_ylabel("FP64 / FP32 median best L2")
-    ax.set_title("Helmholtz selected runs")
+    ax.set_title("Helmholtz: selected comparable runs")
     ax.grid(True, alpha=0.3)
+
     fig.tight_layout()
-    fig.savefig(fig_dir / "report_helmholtz_rs_sweep.png", dpi=180)
+    fig.savefig(FIG_DIR / "report_helmholtz_rs_sweep.png", dpi=180)
     plt.close(fig)
 
 
-def plot_seed_scatter(cases, runs, out_name, title):
+def split_sources(text):
+    if not isinstance(text, str):
+        return []
+    return [x.strip() for x in text.split(";") if x.strip()]
+
+
+def runs_for_case(case, runs):
+    paths = split_sources(case.get("source_paths", ""))
+    if not paths:
+        return pd.DataFrame()
+
+    return runs[runs["source_path"].isin(paths)].copy()
+
+
+def plot_seed_scatter(cases, runs, file_name, title):
+    if cases.empty:
+        return
+
     rows = []
-    cases = with_plot_names(cases)
+    cases = add_plot_names(cases)
+
     for _, case in cases.iterrows():
-        paths = [x.strip() for x in str(case.get("source_paths", "")).split(";") if x.strip()]
-        cur = runs[runs["source_path"].isin(paths)].copy()
-        for _, r in cur.iterrows():
-            if r["dtype"] not in ["fp32", "fp64"]:
+        cur = runs_for_case(case, runs)
+
+        for _, run in cur.iterrows():
+            if run["dtype"] not in {"fp32", "fp64"}:
                 continue
+
             rows.append({
                 "case_id": case["case_id"],
                 "plot_name": case["plot_name"],
-                "dtype": r["dtype"],
-                "best_l2_error": r["best_l2_error"],
+                "dtype": run["dtype"],
+                "best_l2_error": run["best_l2_error"],
             })
+
     df = pd.DataFrame(rows)
     if df.empty:
         return
-    ids = list(cases["plot_name"])
-    fig, ax = plt.subplots(figsize=(max(9, len(ids) * 0.9), 4.8))
-    colors = {"fp32": "#4c78a8", "fp64": "#f58518"}
-    for dtype in ["fp32", "fp64"]:
+
+    names = list(cases["plot_name"])
+    fig, ax = plt.subplots(figsize=(max(9, len(names) * 1.1), 4.8))
+
+    for dtype, shift in [("fp32", -0.08), ("fp64", 0.08)]:
         cur = df[df["dtype"] == dtype]
-        xs = [ids.index(x) + (-0.08 if dtype == "fp32" else 0.08) for x in cur["plot_name"]]
-        ax.scatter(xs, cur["best_l2_error"], label=dtype.upper(), alpha=0.85, color=colors[dtype])
+        xs = [names.index(name) + shift for name in cur["plot_name"]]
+        ax.scatter(xs, cur["best_l2_error"], label=dtype.upper(), alpha=0.85)
+
     ax.set_yscale("log")
-    ax.set_xticks(range(len(ids)))
-    ax.set_xticklabels(ids, rotation=30, ha="right")
+    ax.set_xticks(range(len(names)))
+    ax.set_xticklabels(names, rotation=30, ha="right")
     ax.set_ylabel("Best L2 error")
     ax.set_title(title)
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
+
     fig.tight_layout()
-    fig.savefig(fig_dir / out_name, dpi=180)
+    fig.savefig(FIG_DIR / file_name, dpi=180)
     plt.close(fig)
 
 
 def plot_burgers_summary(main):
     cur = main[main["case_id"].isin(["burgers_nu0p001", "burgers_nu0p002"])].copy()
     cur = cur.dropna(subset=["fp32_median_best_l2", "fp64_median_best_l2"])
-    cur = with_plot_names(cur)
+    cur = add_plot_names(cur)
+
     if cur.empty:
         return
+
     x = np.arange(len(cur))
-    fig, ax = plt.subplots(figsize=(7.5, 4))
+
+    fig, ax = plt.subplots(figsize=(7.5, 4.0))
     ax.bar(x - 0.18, cur["fp32_median_best_l2"], width=0.36, label="FP32")
     ax.bar(x + 0.18, cur["fp64_median_best_l2"], width=0.36, label="FP64")
+
     ax.set_yscale("log")
     ax.set_xticks(x)
     ax.set_xticklabels(cur["plot_name"])
     ax.set_ylabel("Best L2 error")
     ax.set_title("Burgers selected runs")
-    ax.text(0.99, 0.95, "lower is better", transform=ax.transAxes, ha="right", va="top")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
+
     fig.tight_layout()
-    fig.savefig(fig_dir / "report_burgers_summary.png", dpi=180)
+    fig.savefig(FIG_DIR / "report_burgers_summary.png", dpi=180)
     plt.close(fig)
 
 
-def plot_fp16_summary(fp16):
-    if fp16.empty:
+def plot_fp16_summary(fp16_table):
+    if fp16_table.empty:
         return
-    cur = fp16.copy()
-    cur["case"] = cur["task_name"].astype(str) + " " + cur["main_parameter_value"].map(fmt)
-    fig, ax = plt.subplots(figsize=(max(8, len(cur) * 0.8), 4))
+
+    cur = fp16_table.copy()
+    cur["name"] = cur["task_name"].astype(str) + ", " + cur["main_parameter_name"].astype(str) + "=" + cur["main_parameter_value"].map(fmt_num)
+
+    fig, ax = plt.subplots(figsize=(max(8, len(cur) * 0.9), 4.0))
     ax.bar(range(len(cur)), cur["bad_rate"])
+
     ax.set_xticks(range(len(cur)))
-    ax.set_xticklabels(cur["case"], rotation=30, ha="right")
+    ax.set_xticklabels(cur["name"], rotation=30, ha="right")
     ax.set_ylim(0, 1.05)
-    ax.set_ylabel("bad rate")
-    ax.set_title("FP16 failure cases")
+    ax.set_ylabel("Bad rate")
+    ax.set_title("FP16 runs")
     ax.grid(True, axis="y", alpha=0.3)
+
     fig.tight_layout()
-    fig.savefig(fig_dir / "report_fp16_summary.png", dpi=180)
+    fig.savefig(FIG_DIR / "report_fp16_summary.png", dpi=180)
     plt.close(fig)
 
 
-def plot_task_overview(overview):
-    cur = overview.groupby(["task_name", "dtype"], as_index=False)["n_total"].sum()
-    tasks = sorted(cur["task_name"].unique())
-    dtypes = ["fp32", "fp64", "fp16"]
-    x = np.arange(len(tasks))
-    fig, ax = plt.subplots(figsize=(8, 4))
-    for i, dtype in enumerate(dtypes):
-        vals = []
-        for task in tasks:
-            part = cur[(cur["task_name"] == task) & (cur["dtype"] == dtype)]
-            vals.append(float(part["n_total"].iloc[0]) if len(part) else 0)
-        ax.bar(x + (i - 1) * 0.22, vals, width=0.22, label=dtype.upper())
-    ax.set_xticks(x)
-    ax.set_xticklabels(tasks, rotation=20, ha="right")
-    ax.set_ylabel("число запусков")
-    ax.set_title("Найденные запуски по задачам")
-    ax.grid(True, axis="y", alpha=0.3)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(fig_dir / "report_task_overview.png", dpi=180)
-    plt.close(fig)
+def metric_columns_for_plot(df):
+    step_col = find_metric_col(df, {"step", "epoch", "iter", "iteration"})
+    loss_col = find_metric_col(df, {"total_loss", "loss"})
+    l2_col = find_metric_col(df, {"l2_error", "relative_l2_error", "rel_l2_error"})
+
+    return step_col, loss_col, l2_col
 
 
-def plot_curves(case_id, cases, runs, out_name, title):
+def plot_curves(case_id, cases, runs, file_name, title):
     row = cases[cases["case_id"] == case_id]
     if row.empty:
         return
-    paths = [x.strip() for x in str(row.iloc[0]["source_paths"]).split(";") if x.strip()]
-    cur = runs[runs["source_path"].isin(paths)].copy()
-    cur = cur[cur["dtype"].isin(["fp32", "fp64"])]
-    if cur.empty:
+
+    case = row.iloc[0]
+    cur_runs = runs_for_case(case, runs)
+    cur_runs = cur_runs[cur_runs["dtype"].isin(["fp32", "fp64"])]
+
+    if cur_runs.empty:
         return
-    fig, ax = plt.subplots(1, 2, figsize=(11, 4))
-    for _, r in cur.sort_values(["dtype", "seed"]).iterrows():
-        p = root / str(r["metrics_path"])
-        if not p.exists():
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+
+    any_loss = False
+    any_l2 = False
+
+    for _, run in cur_runs.sort_values(["dtype", "seed"]).iterrows():
+        metrics_path = run.get("metrics_path", "")
+        if not metrics_path:
             continue
-        m = pd.read_csv(p)
-        if "step" not in m.columns:
+
+        path = ROOT / metrics_path
+        if not path.exists():
             continue
-        seed = int(r["seed"]) if pd.notna(r["seed"]) else "?"
-        label = f"{str(r['dtype']).upper()} seed={seed}"
-        if "total_loss" in m.columns:
-            ax[0].plot(m["step"], m["total_loss"], label=label)
-        if "l2_error" in m.columns:
-            ax[1].plot(m["step"], m["l2_error"], label=label)
-    ax[0].set_yscale("log")
-    ax[1].set_yscale("log")
-    ax[0].set_xlabel("training step")
-    ax[1].set_xlabel("training step")
-    ax[0].set_ylabel("total loss")
-    ax[1].set_ylabel("relative L2 error")
-    ax[0].grid(True, alpha=0.3)
-    ax[1].grid(True, alpha=0.3)
-    ax[0].legend(fontsize=8)
-    ax[1].legend(fontsize=8)
+
+        try:
+            df = pd.read_csv(path)
+        except Exception:
+            continue
+
+        step_col, loss_col, l2_col = metric_columns_for_plot(df)
+
+        if step_col is None:
+            x = np.arange(len(df))
+        else:
+            x = pd.to_numeric(df[step_col], errors="coerce")
+
+        seed = run["seed"]
+        seed = int(seed) if pd.notna(seed) else "?"
+        label = f"{run['dtype'].upper()} seed={seed}"
+
+        if loss_col is not None:
+            y = pd.to_numeric(df[loss_col], errors="coerce")
+            axes[0].plot(x, y, label=label)
+            any_loss = True
+
+        if l2_col is not None:
+            y = pd.to_numeric(df[l2_col], errors="coerce")
+            axes[1].plot(x, y, label=label)
+            any_l2 = True
+
+    axes[0].set_title("Loss")
+    axes[1].set_title("Relative L2 error")
+
+    for ax in axes:
+        ax.set_xlabel("Training step")
+        ax.grid(True, alpha=0.3)
+        ax.set_yscale("log")
+
+    if any_loss:
+        axes[0].legend(fontsize=8)
+    if any_l2:
+        axes[1].legend(fontsize=8)
+
+    if not any_loss:
+        axes[0].text(0.5, 0.5, "no loss column", ha="center", va="center", transform=axes[0].transAxes)
+    if not any_l2:
+        axes[1].text(0.5, 0.5, "no L2 column", ha="center", va="center", transform=axes[1].transAxes)
+
     fig.suptitle(title)
     fig.tight_layout()
-    out_path = fig_dir / out_name
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=180)
+    fig.savefig(FIG_DIR / file_name, dpi=180)
     plt.close(fig)
 
 
-def make_figures(main, helm, diag, all_cases, overview, fp16, runs):
-    archive_old_figures()
+def make_figures(main, helm, diag, fp16_table, runs):
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    main_no_fp16 = main[main["case_id"] != "fp16_summary"].copy()
+
     plot_main_bars(main)
     plot_main_ratio(main)
+    plot_seed_scatter(main_no_fp16, runs, "report_main_seed_scatter.png", "Main cases: seed-level errors")
+
     plot_helmholtz_ratio(helm)
     plot_helmholtz_sweep(helm)
-    plot_seed_scatter(main[main["case_id"] != "fp16_summary"], runs, "report_main_seed_scatter.png", "Main runs by seed")
-    plot_seed_scatter(diag, runs, "report_diagnostic_seed_sensitive.png", "Diagnostic runs by seed")
-    plot_burgers_summary(main)
-    plot_fp16_summary(fp16)
-    plot_curves("helmholtz_m12_long", all_cases, runs, "report_helmholtz_m12_curves.png", "Helmholtz m=12")
-    plot_curves("convection_beta30", all_cases, runs, "report_convection_beta30_curves.png", "Convection, β=30")
+
     plot_curves(
-        "convection_beta50",
-        all_cases,
+        "helmholtz_m12_long",
+        pd.concat([main, helm, diag], ignore_index=True),
         runs,
-        "diagnostic/report_convection_beta50_check.png",
-        "Convection, β=50: diagnostic run, one seed only",
+        "report_helmholtz_m12_curves.png",
+        "Helmholtz, m=12",
     )
 
+    plot_curves(
+        "convection_beta30",
+        main,
+        runs,
+        "report_convection_beta30_curves.png",
+        "Convection, β=30",
+    )
 
-def write_selected(main, helm, diag):
-    lines = ["# Выбранные кейсы", ""]
-    lines.append("## Основные")
-    lines.append("")
-    for _, row in main.iterrows():
-        lines.append(f"- `{row['case_id']}` - {row['label']}. {row['comment']}")
-    lines.append("")
-    lines.append("## Helmholtz")
-    lines.append("")
-    for _, row in helm.iterrows():
-        lines.append(f"- `{row['case_id']}` - {row['label']}. {row['comment']}")
-    lines.append("")
-    lines.append("## Диагностические")
-    lines.append("")
-    for _, row in diag.iterrows():
-        lines.append(f"- `{row['case_id']}` - {row['label']}. {row['comment']}")
-    (selected_dir / "selected_cases.md").write_text("\n".join(lines) + "\n")
+    plot_burgers_summary(main)
+    plot_fp16_summary(fp16_table)
 
+    if not diag.empty:
+        plot_seed_scatter(diag, runs, "report_diagnostic_seed_sensitive.png", "Diagnostic cases")
 
-def write_additional_checks():
-    lines = [
-        "# Дополнительные проверки",
-        "",
-        "Основные таблицы уже собраны из существующих логов. Полный перезапуск экспериментов не нужен.",
-        "",
-        "## Что уже есть",
-        "",
-        "- сводные таблицы по лучшей и финальной relative L2 error",
-        "- отдельная таблица по FP16",
-        "- основной блок Helmholtz",
-        "- диагностический блок для спорных запусков",
-        "- графики для главных кейсов",
-        "",
-        "## Что можно проверить дополнительно",
-        "",
-        "Если хочется усилить convection beta=50, лучше добавить только seed 1 и 2 для FP32 и FP64.",
-        "Сейчас этот кейс оставлен как диагностический, потому что один seed не даёт устойчивого вывода.",
-        "",
-        "## Почему не нужен полный перезапуск",
-        "",
-        "Большинство нужных таблиц уже строится из имеющихся `summary.json` и `metrics.csv`.",
-        "Для отчёта важнее аккуратно разделить основные и диагностические кейсы, а не заново запускать всё подряд.",
-        "",
-        "## Минимальные selected checks",
-        "",
-        "- `convection_beta50_fp32_seed1`",
-        "- `convection_beta50_fp32_seed2`",
-        "- `convection_beta50_fp64_seed1`",
-        "- `convection_beta50_fp64_seed2`",
-        "",
-        "Если нужны карты решения, можно отдельно построить seed 0 для FP32 и FP64.",
-    ]
-    (notes_dir / "additional_checks.md").write_text("\n".join(lines) + "\n")
-    old_dir = out_dir / "rerun_plan"
-    old = old_dir / ("optional" + "_checks.md")
-    miss = old_dir / ("miss" + "ing" + "_artifacts.md")
-    if old.exists():
-        old.unlink()
-    if miss.exists():
-        miss.unlink()
-
-
-def write_readmes(runs, main, helm, diag, fp16):
-    tasks = ", ".join(sorted(runs["task_name"].dropna().unique()))
-    root_readme = [
-        "# Эксперименты с точностью вычислений в PINN",
-        "",
-        "Здесь лежит код и результаты экспериментов для курсовой. Я сравниваю FP32, FP64 и FP16 при обучении PINN.",
-        "",
-        "В логах есть задачи `heat1d`, `burgers1d`, `helmholtz1d` и `convection1d`. Главный экспериментальный блок - Helmholtz. `convection1d` и `burgers1d` помогают показать, что FP64 не всегда автоматически лучше FP32.",
-        "",
-        "## Структура проекта",
-        "",
-        "- `src/pinn_model.py` - код модели и обучения",
-        "- `notebooks/results_summary.ipynb` - обзор таблиц, графиков и коротких выводов",
-        "- `report_results/tables` - итоговые таблицы",
-        "- `report_results/figures` - графики для отчёта",
-        "- `experiments_raw/` - архив старых запусков",
-        "",
-        "## Установка",
-        "",
-        "```bash",
-        "pip install -r requirements.txt",
-        "```",
-        "",
-        "## Как посмотреть результаты",
-        "",
-        "```bash",
-        "jupyter notebook notebooks/results_summary.ipynb",
-        "```",
-        "",
-        "## Как пересобрать таблицы",
-        "",
-        "```bash",
-        "python scripts/analyze_results.py",
-        "```",
-        "",
-        "Скрипт читает готовые `summary.json` и `metrics.csv`. Обучение он не запускает.",
-        "",
-        "## Что смотреть в первую очередь",
-        "",
-        "- `report_results/tables/report_main_cases.csv`",
-        "- `report_results/tables/report_helmholtz_cases.csv`",
-        "- `report_results/tables/report_diagnostic_cases.csv`",
-        "- `report_results/tables/task_overview.csv`",
-        "- `report_results/tables/fp32_fp64_comparison.csv`",
-        "- `report_results/tables/fp16_summary.csv`",
-        "- `report_results/figures/report_helmholtz_ratio.png`",
-        "- `report_results/figures/report_helmholtz_m12_curves.png`",
-        "- `report_results/figures/report_main_best_l2_by_dtype.png`",
-        "- `report_results/figures/report_main_fp64_fp32_ratio.png`",
-        "- `report_results/figures/report_main_seed_scatter.png`",
-        "",
-        "## Замечания",
-        "",
-        "- Плохие seed не скрывались.",
-        "- `convection beta=50` и старый `helmholtz_main m=8` вынесены в диагностические кейсы.",
-        "- FP16 анализируется отдельно от основной таблицы FP32/FP64.",
-        "- Вывод `FP64 всегда лучше` здесь не делается.",
-    ]
-    (root / "README.md").write_text("\n".join(root_readme) + "\n")
-
-    lines = [
-        "# Итоговые результаты",
-        "",
-        "В этой папке лежат таблицы и графики, которые я использую в отчёте. Сырые запуски не удалялись: они остались в `experiments_raw/`.",
-        "",
-        "## Что лежит в папке",
-        "",
-        "- `tables/report_main_cases.csv` - компактная таблица для основного текста",
-        "- `tables/report_helmholtz_cases.csv` - отдельный блок по Helmholtz",
-        "- `tables/report_diagnostic_cases.csv` - спорные и нестабильные запуски",
-        "- `tables/task_overview.csv` - обзор всех найденных запусков",
-        "- `tables/fp32_fp64_comparison.csv` - сравнение FP32 и FP64",
-        "- `tables/fp16_summary.csv` - отдельная сводка по FP16",
-        "- `figures/` - графики для отчёта",
-        "",
-        "## Главное по результатам",
-        "",
-        "Основной положительный блок - Helmholtz. В нескольких сопоставимых настройках FP64 дал меньшую медианную ошибку, особенно при `m=12`.",
-        "",
-        "Burgers получился смешанным: на части запусков FP32 и FP64 близки, а на части FP64 не даёт преимущества.",
-        "",
-        "Convection beta=30 - основной baseline для convection. Convection beta=50 - diagnostic: запусков мало, поэтому этот кейс не стоит использовать как главный устойчивый аргумент.",
-        "",
-        "FP16 - отдельный failure-блок. В этих логах он чаще даёт плохие или невалидные метрики, поэтому я не смешиваю его с основной таблицей FP32/FP64.",
-        "",
-        "## Что не надо писать в отчёте",
-        "",
-        "- что FP64 всегда лучше",
-        "- что FP32 всегда ломается",
-        "- что FP16 проверен как полноценный устойчивый вариант для сравнения",
-        "- что все кейсы одинаково устойчивы по seed",
-        "",
-        f"Всего run-папок в сводке: {len(runs)}. Валидных запусков: {int(runs['is_valid'].sum())}. Плохих или невалидных по порогам: {int(runs['is_bad'].sum())}. Задачи: {tasks}.",
-    ]
-    (out_dir / "README.md").write_text("\n".join(lines) + "\n")
-
-
-def sync_base_tables():
-    names = [
-        ("all_runs.csv", "all_runs_normalized.csv"),
-        ("fp32_fp64_comparison.csv", "fp32_fp64_comparison.csv"),
-        ("fp16_summary.csv", "fp16_summary.csv"),
-        ("bad_runs.csv", "bad_runs.csv"),
-    ]
-    for src, dst in names:
-        copy_file(clean_dir / "tables" / src, table_dir / dst)
+    # beta=50 специально не рисую отдельной основной картинкой:
+    # там один seed и FP32 мог просто не начать сходиться.
 
 
 def main():
-    ns = runpy.run_path(str(root / "scripts" / "build_report_results.py"))
-    with contextlib.redirect_stdout(io.StringIO()):
-        ns["main"]()
+    TABLE_DIR.mkdir(parents=True, exist_ok=True)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    archive_old_tables()
-    sync_base_tables()
-    runs = pd.read_csv(clean_dir / "tables" / "all_runs.csv")
-    comp = pd.read_csv(clean_dir / "tables" / "fp32_fp64_comparison.csv")
-    fp16 = pd.read_csv(clean_dir / "tables" / "fp16_summary.csv")
+    runs = read_runs()
 
-    overview = task_overview(runs)
-    main_cases, helm_cases, diag_cases, all_cases = make_cases(comp, overview, fp16, runs)
+    if runs.empty:
+        print("No runs found. Check experiments_raw/.")
+        return
 
-    overview.to_csv(table_dir / "task_overview.csv", index=False)
-    main_cases.to_csv(table_dir / "report_main_cases.csv", index=False)
-    helm_cases.to_csv(table_dir / "report_helmholtz_cases.csv", index=False)
-    diag_cases.to_csv(table_dir / "report_diagnostic_cases.csv", index=False)
+    archive_old_outputs()
 
-    make_figures(main_cases, helm_cases, diag_cases, all_cases, overview, fp16, runs)
-    write_selected(main_cases, helm_cases, diag_cases)
-    write_additional_checks()
-    write_readmes(runs, main_cases, helm_cases, diag_cases, fp16)
+    overview = make_task_overview(runs)
+    comp = make_fp32_fp64_comparison(runs)
+    main_cases, helm_cases, diag_cases, fp16_table = make_report_tables(comp, overview, runs)
 
-    print(f"runs: {len(runs)}")
-    print(f"valid: {int(runs['is_valid'].sum())}")
-    print(f"bad: {int(runs['is_bad'].sum())}")
-    print(f"main cases: {len(main_cases)}")
-    print(f"helmholtz cases: {len(helm_cases)}")
-    print(f"diagnostic cases: {len(diag_cases)}")
-    print("report_results updated")
+    save_csv(runs, TABLE_DIR / "all_runs_normalized.csv")
+    save_csv(runs[runs["is_bad"]], TABLE_DIR / "bad_runs.csv")
+    save_csv(overview, TABLE_DIR / "task_overview.csv")
+    save_csv(comp, TABLE_DIR / "fp32_fp64_comparison.csv")
+    save_csv(fp16_table, TABLE_DIR / "fp16_summary.csv")
+    save_csv(main_cases, TABLE_DIR / "report_main_cases.csv")
+    save_csv(helm_cases, TABLE_DIR / "report_helmholtz_cases.csv")
+    save_csv(diag_cases, TABLE_DIR / "report_diagnostic_cases.csv")
+
+    make_figures(main_cases, helm_cases, diag_cases, fp16_table, runs)
+
+    print("Done.")
+    print(f"Runs: {len(runs)}")
+    print(f"Valid runs: {int(runs['is_valid'].sum())}")
+    print(f"Bad runs: {int(runs['is_bad'].sum())}")
+    print(f"Tables: {TABLE_DIR}")
+    print(f"Figures: {FIG_DIR}")
 
 
 if __name__ == "__main__":
