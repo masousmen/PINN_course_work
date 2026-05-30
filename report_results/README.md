@@ -18,11 +18,10 @@
 - `figures/report_main_best_l2_by_dtype.png`
 - `figures/report_main_fp64_fp32_ratio.png`
 - `figures/report_main_seed_scatter.png`
-- `figures/report_helmholtz_main_ratio.png`
+- `figures/report_helmholtz_ratio.png`
 - `figures/report_helmholtz_rs_sweep.png`
 - `figures/report_helmholtz_m12_curves.png`
 - `figures/report_convection_beta30_curves.png`
-- `figures/report_convection_beta50_check.png`
 - `figures/report_burgers_summary.png`
 - `figures/report_fp16_summary.png`
 - `figures/report_diagnostic_seed_sensitive.png`

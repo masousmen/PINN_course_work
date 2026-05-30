@@ -58,6 +58,40 @@ def task_short(name):
     return str(name).replace("1d", "")
 
 
+case_names = {
+    "heat_alpha01": "Heat, α=0.1",
+    "helmholtz_m12_long": "Helmholtz, m=12",
+    "helmholtz_m12_rs": "Helmholtz, m=12, resampling",
+    "helmholtz_m12_resample128": "Helmholtz, m=12, long L-BFGS",
+    "helmholtz_m7_rs": "Helmholtz, m=7",
+    "helmholtz_m8_rs": "Helmholtz, m=8",
+    "helmholtz_m10_resample128": "Helmholtz, m=10",
+    "helmholtz_m11_rs": "Helmholtz, m=11",
+    "convection_beta30": "Convection, β=30",
+    "convection_beta50": "Convection, β=50, diagnostic",
+    "burgers_nu0p002": "Burgers, ν=0.002",
+    "burgers_nu0p001": "Burgers, ν=0.001",
+    "fp16_summary": "FP16 failure cases",
+}
+
+
+helmholtz_names = {
+    "helmholtz_m7_rs": "m=7",
+    "helmholtz_m8_rs": "m=8",
+    "helmholtz_m10_resample128": "m=10",
+    "helmholtz_m11_rs": "m=11",
+    "helmholtz_m12_long": "m=12",
+    "helmholtz_m12_rs": "m=12, rs",
+    "helmholtz_m12_resample128": "m=12, long",
+}
+
+
+def with_plot_names(df):
+    df = df.copy()
+    df["plot_name"] = df["case_id"].map(case_names).fillna(df["case_id"])
+    return df
+
+
 def pretty_case_id(task, par, val, variant):
     v = fmt(val).replace(".", "p")
     if task == "helmholtz1d":
@@ -319,6 +353,8 @@ def archive_old_figures():
         "report_fp64_fp32_ratio.png",
         "report_seed_scatter.png",
         "report_convection_beta50_curves.png",
+        "report_convection_beta50_check.png",
+        "report_helmholtz_main_ratio.png",
         "report_burgers_nu0002_curves.png",
         "report_task_overview.png",
     ]
@@ -359,6 +395,7 @@ def archive_old_tables():
 def plot_main_bars(main):
     cur = main.dropna(subset=["fp32_median_best_l2", "fp64_median_best_l2"]).copy()
     cur = cur[cur["case_id"] != "fp16_summary"]
+    cur = with_plot_names(cur)
     if cur.empty:
         return
     x = np.arange(len(cur))
@@ -367,9 +404,10 @@ def plot_main_bars(main):
     ax.bar(x + 0.18, cur["fp64_median_best_l2"], width=0.36, label="FP64")
     ax.set_yscale("log")
     ax.set_xticks(x)
-    ax.set_xticklabels(cur["case_id"], rotation=30, ha="right")
-    ax.set_ylabel("relative L2 error")
-    ax.set_title("Основные кейсы: median best L2")
+    ax.set_xticklabels(cur["plot_name"], rotation=30, ha="right")
+    ax.set_ylabel("Best L2 error")
+    ax.set_title("Median best L2 by dtype")
+    ax.text(0.99, 0.95, "lower is better", transform=ax.transAxes, ha="right", va="top")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
     fig.tight_layout()
@@ -380,6 +418,7 @@ def plot_main_bars(main):
 def plot_main_ratio(main):
     cur = main.dropna(subset=["ratio"]).copy()
     cur = cur[cur["case_id"] != "fp16_summary"]
+    cur = with_plot_names(cur)
     if cur.empty:
         return
     fig, ax = plt.subplots(figsize=(max(9, len(cur) * 0.95), 4.2))
@@ -387,9 +426,10 @@ def plot_main_ratio(main):
     ax.axhline(1.0, color="black", linewidth=1)
     ax.set_yscale("log")
     ax.set_xticks(range(len(cur)))
-    ax.set_xticklabels(cur["case_id"], rotation=30, ha="right")
-    ax.set_ylabel("FP64 / FP32")
-    ax.set_title("Отношение ошибки FP64 к FP32")
+    ax.set_xticklabels(cur["plot_name"], rotation=30, ha="right")
+    ax.set_ylabel("FP64 / FP32 median best L2")
+    ax.set_title("FP64 / FP32 median best L2")
+    ax.text(0.99, 0.95, "lower is better", transform=ax.transAxes, ha="right", va="top")
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
     fig.savefig(fig_dir / "report_main_fp64_fp32_ratio.png", dpi=180)
@@ -398,6 +438,7 @@ def plot_main_ratio(main):
 
 def plot_helmholtz_ratio(helm):
     cur = helm.dropna(subset=["ratio"]).copy()
+    cur["plot_name"] = cur["case_id"].map(helmholtz_names).fillna(cur["case_id"])
     if cur.empty:
         return
     fig, ax = plt.subplots(figsize=(max(8, len(cur) * 1.0), 4.2))
@@ -405,12 +446,13 @@ def plot_helmholtz_ratio(helm):
     ax.axhline(1.0, color="black", linewidth=1)
     ax.set_yscale("log")
     ax.set_xticks(range(len(cur)))
-    ax.set_xticklabels(cur["case_id"], rotation=30, ha="right")
-    ax.set_ylabel("FP64 / FP32")
-    ax.set_title("Helmholtz: отношение median best L2")
+    ax.set_xticklabels(cur["plot_name"], rotation=25, ha="right")
+    ax.set_ylabel("FP64 / FP32 median best L2")
+    ax.set_title("Helmholtz selected runs")
+    ax.text(0.99, 0.95, "lower is better", transform=ax.transAxes, ha="right", va="top")
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    fig.savefig(fig_dir / "report_helmholtz_main_ratio.png", dpi=180)
+    fig.savefig(fig_dir / "report_helmholtz_ratio.png", dpi=180)
     plt.close(fig)
 
 
@@ -419,16 +461,17 @@ def plot_helmholtz_sweep(helm):
     if cur.empty:
         return
     cur["m"] = cur["parameter"].str.extract(r"m=([0-9.]+)").astype(float)
+    cur["plot_name"] = cur["case_id"].map(helmholtz_names).fillna(cur["case_id"])
     cur = cur.sort_values(["m", "variant"])
     fig, ax = plt.subplots(figsize=(8.5, 4.2))
     ax.scatter(cur["m"], cur["ratio"], s=70, color="#f58518")
     for _, row in cur.iterrows():
-        ax.text(row["m"], row["ratio"] * 1.08, row["case_id"].replace("helmholtz_", ""), fontsize=8, ha="center")
+        ax.text(row["m"], row["ratio"] * 1.08, row["plot_name"], fontsize=8, ha="center")
     ax.axhline(1.0, color="black", linewidth=1)
     ax.set_yscale("log")
     ax.set_xlabel("m")
-    ax.set_ylabel("FP64 / FP32")
-    ax.set_title("Helmholtz: выбранные m и варианты")
+    ax.set_ylabel("FP64 / FP32 median best L2")
+    ax.set_title("Helmholtz selected runs")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(fig_dir / "report_helmholtz_rs_sweep.png", dpi=180)
@@ -437,6 +480,7 @@ def plot_helmholtz_sweep(helm):
 
 def plot_seed_scatter(cases, runs, out_name, title):
     rows = []
+    cases = with_plot_names(cases)
     for _, case in cases.iterrows():
         paths = [x.strip() for x in str(case.get("source_paths", "")).split(";") if x.strip()]
         cur = runs[runs["source_path"].isin(paths)].copy()
@@ -445,23 +489,24 @@ def plot_seed_scatter(cases, runs, out_name, title):
                 continue
             rows.append({
                 "case_id": case["case_id"],
+                "plot_name": case["plot_name"],
                 "dtype": r["dtype"],
                 "best_l2_error": r["best_l2_error"],
             })
     df = pd.DataFrame(rows)
     if df.empty:
         return
-    ids = list(cases["case_id"])
+    ids = list(cases["plot_name"])
     fig, ax = plt.subplots(figsize=(max(9, len(ids) * 0.9), 4.8))
     colors = {"fp32": "#4c78a8", "fp64": "#f58518"}
     for dtype in ["fp32", "fp64"]:
         cur = df[df["dtype"] == dtype]
-        xs = [ids.index(x) + (-0.08 if dtype == "fp32" else 0.08) for x in cur["case_id"]]
+        xs = [ids.index(x) + (-0.08 if dtype == "fp32" else 0.08) for x in cur["plot_name"]]
         ax.scatter(xs, cur["best_l2_error"], label=dtype.upper(), alpha=0.85, color=colors[dtype])
     ax.set_yscale("log")
     ax.set_xticks(range(len(ids)))
     ax.set_xticklabels(ids, rotation=30, ha="right")
-    ax.set_ylabel("relative L2 error")
+    ax.set_ylabel("Best L2 error")
     ax.set_title(title)
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
@@ -473,6 +518,7 @@ def plot_seed_scatter(cases, runs, out_name, title):
 def plot_burgers_summary(main):
     cur = main[main["case_id"].isin(["burgers_nu0p001", "burgers_nu0p002"])].copy()
     cur = cur.dropna(subset=["fp32_median_best_l2", "fp64_median_best_l2"])
+    cur = with_plot_names(cur)
     if cur.empty:
         return
     x = np.arange(len(cur))
@@ -481,9 +527,10 @@ def plot_burgers_summary(main):
     ax.bar(x + 0.18, cur["fp64_median_best_l2"], width=0.36, label="FP64")
     ax.set_yscale("log")
     ax.set_xticks(x)
-    ax.set_xticklabels(cur["parameter"])
-    ax.set_ylabel("relative L2 error")
-    ax.set_title("Burgers: median best L2")
+    ax.set_xticklabels(cur["plot_name"])
+    ax.set_ylabel("Best L2 error")
+    ax.set_title("Burgers selected runs")
+    ax.text(0.99, 0.95, "lower is better", transform=ax.transAxes, ha="right", va="top")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
     fig.tight_layout()
@@ -502,7 +549,7 @@ def plot_fp16_summary(fp16):
     ax.set_xticklabels(cur["case"], rotation=30, ha="right")
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("bad rate")
-    ax.set_title("FP16: доля плохих запусков")
+    ax.set_title("FP16 failure cases")
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
     fig.savefig(fig_dir / "report_fp16_summary.png", dpi=180)
@@ -567,7 +614,9 @@ def plot_curves(case_id, cases, runs, out_name, title):
     ax[1].legend(fontsize=8)
     fig.suptitle(title)
     fig.tight_layout()
-    fig.savefig(fig_dir / out_name, dpi=180)
+    out_path = fig_dir / out_name
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=180)
     plt.close(fig)
 
 
@@ -577,13 +626,19 @@ def make_figures(main, helm, diag, all_cases, overview, fp16, runs):
     plot_main_ratio(main)
     plot_helmholtz_ratio(helm)
     plot_helmholtz_sweep(helm)
-    plot_seed_scatter(main[main["case_id"] != "fp16_summary"], runs, "report_main_seed_scatter.png", "Seed-точки для основных кейсов")
-    plot_seed_scatter(diag, runs, "report_diagnostic_seed_sensitive.png", "Диагностические кейсы")
+    plot_seed_scatter(main[main["case_id"] != "fp16_summary"], runs, "report_main_seed_scatter.png", "Main runs by seed")
+    plot_seed_scatter(diag, runs, "report_diagnostic_seed_sensitive.png", "Diagnostic runs by seed")
     plot_burgers_summary(main)
     plot_fp16_summary(fp16)
     plot_curves("helmholtz_m12_long", all_cases, runs, "report_helmholtz_m12_curves.png", "Helmholtz m=12")
-    plot_curves("convection_beta30", all_cases, runs, "report_convection_beta30_curves.png", "Convection beta=30")
-    plot_curves("convection_beta50", all_cases, runs, "report_convection_beta50_check.png", "Convection beta=50: сложный одиночный запуск")
+    plot_curves("convection_beta30", all_cases, runs, "report_convection_beta30_curves.png", "Convection, β=30")
+    plot_curves(
+        "convection_beta50",
+        all_cases,
+        runs,
+        "diagnostic/report_convection_beta50_check.png",
+        "Convection, β=50: diagnostic run, one seed only",
+    )
 
 
 def write_selected(main, helm, diag):
@@ -693,7 +748,7 @@ def write_readmes(runs, main, helm, diag, fp16):
         "- `report_results/tables/task_overview.csv`",
         "- `report_results/tables/fp32_fp64_comparison.csv`",
         "- `report_results/tables/fp16_summary.csv`",
-        "- `report_results/figures/report_helmholtz_main_ratio.png`",
+        "- `report_results/figures/report_helmholtz_ratio.png`",
         "- `report_results/figures/report_helmholtz_m12_curves.png`",
         "- `report_results/figures/report_main_best_l2_by_dtype.png`",
         "- `report_results/figures/report_main_fp64_fp32_ratio.png`",
@@ -719,6 +774,7 @@ def write_readmes(runs, main, helm, diag, fp16):
         "- `tables/report_helmholtz_cases.csv` - отдельный блок по Helmholtz",
         "- `tables/report_diagnostic_cases.csv` - спорные и нестабильные запуски",
         "- `tables/task_overview.csv` - обзор всех найденных запусков",
+        "- `tables/fp32_fp64_comparison.csv` - сравнение FP32 и FP64",
         "- `tables/fp16_summary.csv` - отдельная сводка по FP16",
         "- `figures/` - графики для отчёта",
         "",

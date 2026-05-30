@@ -2,6 +2,8 @@
 
 Здесь лежит код и результаты экспериментов для курсовой. Я сравниваю FP32, FP64 и FP16 при обучении Physics-Informed Neural Networks.
 
+Основной экспериментальный блок - Helmholtz.
+
 ## Структура проекта
 
 - `src/pinn_model.py` - основной код модели и обучения
@@ -49,6 +51,6 @@ python scripts/analyze_results.py
 - `report_results/figures/report_main_best_l2_by_dtype.png`
 - `report_results/figures/report_main_fp64_fp32_ratio.png`
 - `report_results/figures/report_main_seed_scatter.png`
-- `report_results/figures/report_helmholtz_main_ratio.png`
+- `report_results/figures/report_helmholtz_ratio.png`
 - `report_results/figures/report_helmholtz_rs_sweep.png`
 - `report_results/figures/report_helmholtz_m12_curves.png`
