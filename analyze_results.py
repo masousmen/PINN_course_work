@@ -1,7 +1,17 @@
+import os
 from pathlib import Path
 import runpy
 import shutil
+import contextlib
+import io
 
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/mpl")
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 
@@ -13,6 +23,9 @@ fig_dir = out_dir / "figures"
 selected_dir = out_dir / "selected_runs"
 rerun_dir = out_dir / "rerun_plan"
 
+for p in [table_dir, fig_dir, selected_dir, rerun_dir]:
+    p.mkdir(parents=True, exist_ok=True)
+
 
 def copy_file(src, dst):
     if src.exists():
@@ -20,232 +33,585 @@ def copy_file(src, dst):
         shutil.copy2(src, dst)
 
 
-def fmt_num(x):
+def fmt(x):
     if pd.isna(x):
-        return "nan"
+        return ""
     try:
         return f"{float(x):.4g}"
     except Exception:
         return str(x)
 
 
-def result_text(row, dtype):
-    n = row.get(f"n_{dtype}", row.get(f"{dtype}_n_valid", ""))
-    med = row.get(f"{dtype}_median_best_l2", float("nan"))
-    bad = row.get(f"{dtype}_bad_rate", float("nan"))
-    return f"n={n}, медиана best L2={fmt_num(med)}, доля плохих={fmt_num(bad)}"
+def num_eq(a, b):
+    if pd.isna(a) and pd.isna(b):
+        return True
+    if pd.isna(a) or pd.isna(b):
+        return False
+    return abs(float(a) - float(b)) < 1e-9
 
 
-def public_conclusion(x):
-    if x in ["single_seed_hard_case", "seed_sensitive"]:
-        return "unstable_or_seed_sensitive"
-    return x
-
-
-def russian_conclusion(x):
-    names = {
-        "stable_fp64_better": "FP64 заметно лучше",
-        "moderate_fp64_better": "FP64 немного лучше",
-        "similar": "FP32 и FP64 близки",
+def ru_label(x):
+    d = {
+        "stable_positive": "устойчивый положительный",
+        "moderate_positive": "умеренно положительный",
+        "similar": "похоже",
         "fp32_better": "FP32 лучше",
-        "unstable_or_seed_sensitive": "зависит от seed",
-        "fp16 failed or unstable": "FP16 нестабилен",
+        "seed_sensitive": "зависит от seed",
+        "fp16_failure": "FP16 нестабилен",
+        "sanity_check": "простая проверка",
     }
-    return names.get(str(x), str(x))
+    return d.get(str(x), str(x))
 
 
-def russian_confidence(x):
-    names = {
-        "strong": "сильная",
-        "medium": "средняя",
-        "weak_needs_rerun": "нужна проверка",
-    }
-    return names.get(str(x), str(x))
-
-
-def russian_why(row):
-    task = str(row.get("task_name", ""))
-    parameter = str(row.get("parameter", ""))
-    conclusion = str(row.get("conclusion", ""))
-    if task == "helmholtz1d" and parameter == "m=12":
-        return "Основной положительный пример: на этом режиме FP64 дал меньшую ошибку по медиане."
-    if task == "convection1d" and parameter == "beta=50":
-        return "Сложный режим: FP64 выглядит сильно лучше, но запусков мало, поэтому вывод осторожный."
-    if task == "burgers1d" and parameter == "nu=0.002":
-        return "Контрольный пример: FP32 и FP64 дали близкие ошибки."
-    if task == "burgers1d" and parameter == "nu=0.001":
-        return "Пример, где FP64 не дал преимущества."
-    if task == "helmholtz1d" and parameter == "m=8":
-        return "Пример с заметной зависимостью от seed."
-    if task == "fp16":
-        return "FP16 вынесен отдельно, потому что в этих запусках он часто давал плохие или невалидные метрики."
-    return conclusion
-
-
-def make_selected_cases():
-    src = clean_dir / "tables" / "report_cases.csv"
-    if not src.exists():
-        return
-    df = pd.read_csv(src)
+def task_overview(runs):
     rows = []
-    for _, row in df.iterrows():
+    keys = ["task_name", "main_parameter_name", "main_parameter_value", "dtype"]
+    for vals, cur in runs.groupby(keys, dropna=False):
+        valid = cur[cur["is_valid"]].copy()
+        best = pd.to_numeric(valid["best_l2_error"], errors="coerce")
         rows.append({
-            "task_name": row["task_name"],
-            "parameter": row["parameter"],
-            "case_title": row.get("case_title", row["case_id"]),
-            "variant": row["variant"],
-            "why_selected": russian_why(row),
-            "fp32_result": "" if row["task_name"] == "fp16" else result_text(row, "fp32"),
-            "fp64_result": "" if row["task_name"] == "fp16" else result_text(row, "fp64"),
-            "conclusion": public_conclusion(row["conclusion"]),
-            "confidence_label": row["confidence_label"],
-            "source_runs": row.get("source_paths", ""),
-            "main_parameter_name": row.get("main_parameter_name", ""),
-            "main_parameter_value": row.get("main_parameter_value", ""),
+            "task_name": vals[0],
+            "main_parameter_name": vals[1],
+            "main_parameter_value": vals[2],
+            "dtype": vals[3],
+            "n_total": len(cur),
+            "n_valid": int(cur["is_valid"].sum()),
+            "n_bad": int(cur["is_bad"].sum()),
+            "median_best_l2": best.median(),
+            "mean_best_l2": best.mean(),
+            "min_best_l2": best.min(),
+            "max_best_l2": best.max(),
+            "bad_rate": float(cur["is_bad"].mean()) if len(cur) else np.nan,
         })
-    selected = pd.DataFrame(rows)
-    selected.to_csv(table_dir / "selected_cases.csv", index=False)
-    write_selected_markdown(selected)
+    df = pd.DataFrame(rows)
+    return df.sort_values(["task_name", "main_parameter_name", "main_parameter_value", "dtype"])
 
 
-def write_selected_markdown(selected):
+def case_runs(runs, row):
+    cur = runs[
+        (runs["task_name"] == row["task_name"])
+        & (runs["variant"] == row["variant"])
+        & (runs["main_parameter_name"] == row["main_parameter_name"])
+    ].copy()
+    cur = cur[cur["main_parameter_value"].map(lambda x: num_eq(x, row["main_parameter_value"]))]
+    for col in [
+        "hid_size", "num_layers", "n_collocation", "n_ic", "n_bc", "adam_steps",
+        "lr_adam", "lbfgs_steps", "lbfgs_lr", "lbfgs_max_iter", "resample_every",
+    ]:
+        if col in cur.columns and col in row:
+            cur = cur[cur[col].map(lambda x: num_eq(x, row[col]))]
+    return cur
+
+
+def pick_one(df, task=None, par=None, val=None, variant=None, label=None, prefer=None):
+    cur = df.copy()
+    if task is not None:
+        cur = cur[cur["task_name"] == task]
+    if par is not None:
+        cur = cur[cur["main_parameter_name"] == par]
+    if val is not None:
+        cur = cur[cur["main_parameter_value"].map(lambda x: num_eq(x, val))]
+    if variant is not None:
+        cur = cur[cur["variant"] == variant]
+    if label is not None:
+        cur = cur[cur["label"] == label]
+    if len(cur) == 0:
+        return None
+    if prefer == "low_ratio":
+        cur = cur.sort_values("ratio", na_position="last")
+    elif prefer == "many_seeds":
+        cur = cur.sort_values(["fp32_n_valid", "fp64_n_valid", "fp64_over_fp32_median"], ascending=[False, False, True])
+    else:
+        cur = cur.sort_values(["fp32_n_valid", "fp64_n_valid"], ascending=[False, False])
+    return cur.iloc[0]
+
+
+def comp_to_case(row, runs, label, comment, status="ok"):
+    cur = case_runs(runs, row)
+    cur = cur[cur["dtype"].isin(["fp32", "fp64"])]
+    src = "; ".join(cur["source_path"].astype(str).tolist())
+    param = f"{row['main_parameter_name']}={fmt(row['main_parameter_value'])}"
+    task_short = str(row["task_name"]).replace("1d", "")
+    value = fmt(row["main_parameter_value"]).replace(".", "p")
+    ratio = row["fp64_over_fp32_median"]
+    return {
+        "case_id": f"{task_short}_{row['main_parameter_name']}{value}",
+        "task": row["task_name"],
+        "parameter": param,
+        "variant": row["variant"],
+        "dtype_comparison": "FP32 vs FP64",
+        "n_seed_fp32": row["fp32_n_valid"],
+        "n_seed_fp64": row["fp64_n_valid"],
+        "fp32_median_best_l2": row["fp32_median_best_l2"],
+        "fp64_median_best_l2": row["fp64_median_best_l2"],
+        "ratio": ratio,
+        "bad_rate_fp32": row["fp32_bad_rate"],
+        "bad_rate_fp64": row["fp64_bad_rate"],
+        "label": label,
+        "status": status,
+        "comment": comment,
+        "source_paths": src,
+        "case_key": row.get("case_key", ""),
+    }
+
+
+def make_heat_case(overview, runs):
+    cur = overview[(overview["task_name"] == "heat1d") & (overview["dtype"].isin(["fp32", "fp64"]))]
+    if cur.empty:
+        return None
+    fp32 = cur[cur["dtype"] == "fp32"]
+    fp64 = cur[cur["dtype"] == "fp64"]
+    if fp32.empty or fp64.empty:
+        return None
+    a = fp32.iloc[0]
+    b = fp64.iloc[0]
+    ratio = b["median_best_l2"] / a["median_best_l2"] if a["median_best_l2"] else np.nan
+    src = runs[runs["task_name"] == "heat1d"]["source_path"].astype(str).tolist()
+    return {
+        "case_id": "heat_alpha01",
+        "task": "heat1d",
+        "parameter": "alpha=0.1",
+        "variant": "heat1d",
+        "dtype_comparison": "FP32 vs FP64",
+        "n_seed_fp32": a["n_valid"],
+        "n_seed_fp64": b["n_valid"],
+        "fp32_median_best_l2": a["median_best_l2"],
+        "fp64_median_best_l2": b["median_best_l2"],
+        "ratio": ratio,
+        "bad_rate_fp32": a["bad_rate"],
+        "bad_rate_fp64": b["bad_rate"],
+        "label": "sanity_check",
+        "status": "ok",
+        "comment": "Простая задача для проверки: ошибки у FP32 и FP64 маленькие, большой разницы тут ждать не нужно.",
+        "source_paths": "; ".join(src),
+        "case_key": "",
+    }
+
+
+def make_report_cases(comp, overview, fp16, runs):
+    comp2 = comp.copy()
+    comp2["label"] = "seed_sensitive"
+    stable = (
+        (comp2["fp32_n_valid"] >= 2)
+        & (comp2["fp64_n_valid"] >= 2)
+        & (comp2["fp64_over_fp32_median"] < 0.5)
+        & (comp2["fp64_bad_rate"] <= comp2["fp32_bad_rate"] + 0.25)
+        & (comp2["fp32_bad_rate"] < 0.5)
+        & (comp2["fp64_bad_rate"] < 0.5)
+    )
+    moderate = (
+        (comp2["fp32_n_valid"] >= 2)
+        & (comp2["fp64_n_valid"] >= 2)
+        & (comp2["fp64_over_fp32_median"] >= 0.5)
+        & (comp2["fp64_over_fp32_median"] <= 0.8)
+        & (comp2["fp32_bad_rate"] < 0.5)
+        & (comp2["fp64_bad_rate"] < 0.5)
+    )
+    similar = (
+        (comp2["fp32_n_valid"] >= 2)
+        & (comp2["fp64_n_valid"] >= 2)
+        & (comp2["fp64_over_fp32_median"] > 0.8)
+        & (comp2["fp64_over_fp32_median"] < 1.25)
+        & (comp2["fp32_bad_rate"] < 0.5)
+        & (comp2["fp64_bad_rate"] < 0.5)
+    )
+    fp32_better = (
+        (comp2["fp32_n_valid"] >= 2)
+        & (comp2["fp64_n_valid"] >= 2)
+        & (comp2["fp64_over_fp32_median"] >= 1.25)
+        & (comp2["fp32_bad_rate"] < 0.5)
+        & (comp2["fp64_bad_rate"] < 0.5)
+    )
+    comp2.loc[stable, "label"] = "stable_positive"
+    comp2.loc[moderate, "label"] = "moderate_positive"
+    comp2.loc[similar, "label"] = "similar"
+    comp2.loc[fp32_better, "label"] = "fp32_better"
+
+    rows = []
+    heat = make_heat_case(overview, runs)
+    if heat is not None:
+        rows.append(heat)
+
+    row = pick_one(comp2, "helmholtz1d", "m", 12, "helmholtz_resample_long")
+    if row is not None:
+        label = row["label"]
+        if label not in ["stable_positive", "moderate_positive"]:
+            label = "seed_sensitive"
+        rows.append(comp_to_case(
+            row, runs, label,
+            "Основной Helmholtz-кейс: тут есть по два валидных seed и FP64 лучше по медиане.",
+        ))
+
+    row = pick_one(comp2, "helmholtz1d", "m", 8, "helmholtz_main")
+    if row is not None:
+        rows.append(comp_to_case(
+            row, runs, "seed_sensitive",
+            "Helmholtz m=8 полезен как пример зависимости от seed: один плохой FP32 seed сильно влияет на картину.",
+            "needs_check",
+        ))
+
+    row = pick_one(comp2, "burgers1d", "nu", 0.002, "burgers_more_points")
+    if row is not None:
+        rows.append(comp_to_case(
+            row, runs, "similar",
+            "Burgers nu=0.002 показывает близкие результаты FP32 и FP64.",
+        ))
+
+    row = pick_one(comp2, "burgers1d", "nu", 0.001, "burgers_more_points")
+    if row is not None:
+        rows.append(comp_to_case(
+            row, runs, "fp32_better",
+            "Burgers nu=0.001 оставлен как отрицательный пример: FP64 здесь не дал преимущества.",
+        ))
+
+    row = pick_one(comp2, "convection1d", "beta", 30, "convection_beta30_lbfgs_grid")
+    if row is not None:
+        label = "moderate_positive" if row["label"] == "moderate_positive" else "similar"
+        rows.append(comp_to_case(
+            row, runs, label,
+            "Convection beta=30 выглядит аккуратнее, потому что есть по два seed у FP32 и FP64.",
+        ))
+
+    row = pick_one(comp2, "convection1d", "beta", 50, "convection_beta50_wide_lbfgs")
+    if row is not None:
+        rows.append(comp_to_case(
+            row, runs, "seed_sensitive",
+            "Предварительный hard-case: FP64 выглядит сильно лучше, но есть только один seed. FP32 мог не сойтись из-за неудачного старта.",
+            "preliminary; needs_check",
+        ))
+
+    if len(fp16):
+        total = int(fp16["n_total"].sum())
+        bad = int(fp16["n_bad"].sum())
+        rows.append({
+            "case_id": "fp16_summary",
+            "task": "fp16",
+            "parameter": "все fp16-запуски",
+            "variant": "отдельно",
+            "dtype_comparison": "FP16",
+            "n_seed_fp32": np.nan,
+            "n_seed_fp64": np.nan,
+            "fp32_median_best_l2": np.nan,
+            "fp64_median_best_l2": np.nan,
+            "ratio": np.nan,
+            "bad_rate_fp32": np.nan,
+            "bad_rate_fp64": np.nan,
+            "label": "fp16_failure",
+            "status": "separate",
+            "comment": f"FP16 вынесен отдельно: {bad}/{total} запусков плохие или невалидные.",
+            "source_paths": "",
+            "case_key": "",
+        })
+
+    df = pd.DataFrame(rows)
+    seen = {}
+    ids = []
+    for _, row in df.iterrows():
+        base = str(row["case_id"]).replace(".", "p").replace("=", "")
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        ids.append(base if n == 0 else f"{base}_{n + 1}")
+    df["case_id"] = ids
+    return df.head(10)
+
+
+def write_selected_md(cases):
     lines = ["# Выбранные кейсы", ""]
-    for _, row in selected.iterrows():
-        lines.append(f"## {row['case_title']}")
+    for _, row in cases.iterrows():
+        lines.append(f"## {row['case_id']}")
         lines.append("")
-        lines.append(f"- задача: `{row['task_name']}`")
+        lines.append(f"- задача: `{row['task']}`")
         lines.append(f"- параметр: `{row['parameter']}`")
         lines.append(f"- вариант: `{row['variant']}`")
-        lines.append(f"- почему выбран: {row['why_selected']}")
-        if str(row.get("fp32_result", "")).strip():
-            lines.append(f"- FP32: {row['fp32_result']}")
-        if str(row.get("fp64_result", "")).strip():
-            lines.append(f"- FP64: {row['fp64_result']}")
-        lines.append(f"- вывод: {russian_conclusion(row['conclusion'])}")
-        lines.append(f"- надёжность: {russian_confidence(row['confidence_label'])}")
-        src = str(row.get("source_runs", "")).strip()
+        lines.append(f"- тип: {ru_label(row['label'])}")
+        lines.append(f"- статус: {row['status']}")
+        if pd.notna(row["fp32_median_best_l2"]):
+            lines.append(f"- FP32 median best L2: {fmt(row['fp32_median_best_l2'])}")
+        if pd.notna(row["fp64_median_best_l2"]):
+            lines.append(f"- FP64 median best L2: {fmt(row['fp64_median_best_l2'])}")
+        if pd.notna(row["ratio"]):
+            lines.append(f"- FP64/FP32: {fmt(row['ratio'])}")
+        lines.append(f"- комментарий: {row['comment']}")
+        src = str(row.get("source_paths", "")).strip()
         if src and src.lower() != "nan":
             lines.append("- исходные run-папки:")
-            for p in src.replace("|", ";").split(";"):
-                p = p.strip()
+            for p in src.split("; "):
                 if p:
                     lines.append(f"  - `{p}`")
         lines.append("")
     (selected_dir / "selected_cases.md").write_text("\n".join(lines) + "\n")
 
 
-def write_report_readme():
-    runs = pd.read_csv(clean_dir / "tables" / "all_runs.csv")
-    selected = pd.read_csv(table_dir / "selected_cases.csv")
-    fp16 = pd.read_csv(clean_dir / "tables" / "fp16_summary.csv")
+def plot_best_l2(cases):
+    cur = cases.dropna(subset=["fp32_median_best_l2", "fp64_median_best_l2"]).copy()
+    if cur.empty:
+        return
+    labels = cur["case_id"].tolist()
+    x = np.arange(len(cur))
+    fig, ax = plt.subplots(figsize=(max(8, len(cur) * 1.2), 4.5))
+    ax.bar(x - 0.18, cur["fp32_median_best_l2"], width=0.36, label="FP32")
+    ax.bar(x + 0.18, cur["fp64_median_best_l2"], width=0.36, label="FP64")
+    ax.set_yscale("log")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=25, ha="right")
+    ax.set_ylabel("relative L2 error")
+    ax.set_title("Median best L2 по выбранным кейсам")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(fig_dir / "report_best_l2_by_dtype.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_ratio(cases):
+    cur = cases.dropna(subset=["ratio"]).copy()
+    if cur.empty:
+        return
+    fig, ax = plt.subplots(figsize=(max(8, len(cur) * 1.1), 4))
+    ax.bar(range(len(cur)), cur["ratio"])
+    ax.axhline(1.0, color="black", linewidth=1)
+    ax.set_yscale("log")
+    ax.set_xticks(range(len(cur)))
+    ax.set_xticklabels(cur["case_id"], rotation=25, ha="right")
+    ax.set_ylabel("FP64 / FP32")
+    ax.set_title("Отношение median best L2")
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(fig_dir / "report_fp64_fp32_ratio.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_task_overview(overview):
+    cur = overview.groupby(["task_name", "dtype"], as_index=False)["n_total"].sum()
+    if cur.empty:
+        return
+    tasks = sorted(cur["task_name"].unique())
+    dtypes = ["fp32", "fp64", "fp16"]
+    x = np.arange(len(tasks))
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for i, dtype in enumerate(dtypes):
+        vals = []
+        for task in tasks:
+            t = cur[(cur["task_name"] == task) & (cur["dtype"] == dtype)]
+            vals.append(float(t["n_total"].iloc[0]) if len(t) else 0)
+        ax.bar(x + (i - 1) * 0.22, vals, width=0.22, label=dtype.upper())
+    ax.set_xticks(x)
+    ax.set_xticklabels(tasks, rotation=20, ha="right")
+    ax.set_ylabel("число запусков")
+    ax.set_title("Сколько запусков найдено")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(fig_dir / "report_task_overview.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_seed_scatter(cases, runs):
+    rows = []
+    for _, case in cases.iterrows():
+        src = str(case.get("source_paths", ""))
+        if not src:
+            continue
+        paths = [x.strip() for x in src.split(";") if x.strip()]
+        cur = runs[runs["source_path"].isin(paths)]
+        for _, r in cur.iterrows():
+            if r["dtype"] not in ["fp32", "fp64"]:
+                continue
+            rows.append({
+                "case_id": case["case_id"],
+                "dtype": r["dtype"],
+                "best_l2_error": r["best_l2_error"],
+            })
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return
+    ids = list(cases["case_id"])
+    fig, ax = plt.subplots(figsize=(max(8, len(ids) * 1.1), 4.5))
+    colors = {"fp32": "#4c78a8", "fp64": "#f58518"}
+    for dtype in ["fp32", "fp64"]:
+        cur = df[df["dtype"] == dtype]
+        xs = [ids.index(x) + (-0.08 if dtype == "fp32" else 0.08) for x in cur["case_id"]]
+        ax.scatter(xs, cur["best_l2_error"], label=dtype.upper(), alpha=0.85, color=colors[dtype])
+    ax.set_yscale("log")
+    ax.set_xticks(range(len(ids)))
+    ax.set_xticklabels(ids, rotation=25, ha="right")
+    ax.set_ylabel("relative L2 error")
+    ax.set_title("Разброс по seed")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(fig_dir / "report_seed_scatter.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_burgers_summary(comp):
+    cur = comp[(comp["task_name"] == "burgers1d") & comp["fp64_over_fp32_median"].notna()].copy()
+    cur = cur[cur["fp32_n_valid"] + cur["fp64_n_valid"] >= 4]
+    if cur.empty:
+        return
+    cur["label"] = cur["variant"] + ", nu=" + cur["main_parameter_value"].map(fmt)
+    cur = cur.sort_values(["main_parameter_value", "variant"]).head(20)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(range(len(cur)), cur["fp64_over_fp32_median"])
+    ax.axhline(1.0, color="black", linewidth=1)
+    ax.set_yscale("log")
+    ax.set_xticks(range(len(cur)))
+    ax.set_xticklabels(cur["label"], rotation=35, ha="right")
+    ax.set_ylabel("FP64 / FP32")
+    ax.set_title("Burgers: сравнение по найденным группам")
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(fig_dir / "report_burgers_summary.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_curves(case_id, cases, runs, out_name, title):
+    row = cases[cases["case_id"] == case_id]
+    if row.empty:
+        return
+    paths = [x.strip() for x in str(row.iloc[0]["source_paths"]).split(";") if x.strip()]
+    cur = runs[runs["source_path"].isin(paths)].copy()
+    cur = cur[cur["dtype"].isin(["fp32", "fp64"])]
+    if cur.empty:
+        return
+    fig, ax = plt.subplots(1, 2, figsize=(11, 4))
+    for _, r in cur.sort_values(["dtype", "seed"]).iterrows():
+        p = root / str(r["metrics_path"])
+        if not p.exists():
+            continue
+        m = pd.read_csv(p)
+        if "step" not in m.columns:
+            continue
+        label = f"{str(r['dtype']).upper()} seed={int(r['seed']) if pd.notna(r['seed']) else '?'}"
+        if "total_loss" in m.columns:
+            ax[0].plot(m["step"], m["total_loss"], label=label)
+        if "l2_error" in m.columns:
+            ax[1].plot(m["step"], m["l2_error"], label=label)
+    ax[0].set_yscale("log")
+    ax[1].set_yscale("log")
+    ax[0].set_xlabel("training step")
+    ax[1].set_xlabel("training step")
+    ax[0].set_ylabel("total loss")
+    ax[1].set_ylabel("relative L2 error")
+    ax[0].grid(True, alpha=0.3)
+    ax[1].grid(True, alpha=0.3)
+    ax[0].legend(fontsize=8)
+    ax[1].legend(fontsize=8)
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(fig_dir / out_name, dpi=180)
+    plt.close(fig)
+
+
+def make_figures(cases, comp, overview, runs):
+    plot_task_overview(overview)
+    plot_best_l2(cases)
+    plot_ratio(cases)
+    plot_seed_scatter(cases, runs)
+    plot_burgers_summary(comp)
+    for case_id, name, title in [
+        ("helmholtz_m12", "report_helmholtz_m12_curves.png", "Helmholtz m=12"),
+        ("burgers_nu0p002", "report_burgers_nu0002_curves.png", "Burgers nu=0.002"),
+        ("convection_beta30", "report_convection_beta30_curves.png", "Convection beta=30"),
+        ("convection_beta50", "report_convection_beta50_check.png", "Convection beta=50: один из hard-case запусков"),
+        ("convection_beta50", "report_convection_beta50_curves.png", "Convection beta=50: один из hard-case запусков"),
+    ]:
+        plot_curves(case_id, cases, runs, name, title)
+
+
+def write_optional_checks():
+    lines = [
+        "# Дополнительные проверки",
+        "",
+        "Основные таблицы уже собраны из существующих логов. Полный перезапуск экспериментов не нужен.",
+        "Ниже только небольшие проверки, которые можно сделать, если нужно усилить отдельные места в отчёте.",
+        "",
+        "## Что уже есть",
+        "",
+        "- таблицы по всем найденным run-папкам;",
+        "- сравнение FP32 и FP64 по медиане и bad rate;",
+        "- отдельный блок по FP16;",
+        "- графики для основных кейсов;",
+        "- осторожная пометка для Convection beta=50.",
+        "",
+        "## Что можно проверить дополнительно",
+        "",
+        "- Convection beta=50 на seed 1 и 2 для FP32/FP64;",
+        "- MAE/RMSE и карты exact / prediction / error для Convection beta=50, если нужны картинки в отчёт;",
+        "- один FP16-запуск можно оставить только как иллюстрацию нестабильности.",
+        "",
+        "## Почему не нужен полный перезапуск",
+        "",
+        "В логах уже есть Heat, Burgers, Helmholtz и Convection с разными параметрами. Проблема не в объёме данных, а в том, что часть кейсов seed-sensitive.",
+        "",
+        "## Минимальные selected checks",
+        "",
+        "- convection_beta50_fp32_seed1",
+        "- convection_beta50_fp32_seed2",
+        "- convection_beta50_fp64_seed1",
+        "- convection_beta50_fp64_seed2",
+        "",
+        "Если нужны карты для уже выбранного seed 0:",
+        "",
+        "- convection_beta50_fp32_seed0",
+        "- convection_beta50_fp64_seed0",
+        "",
+        "FP16 check можно запускать отдельно, но он не обязателен для основного сравнения FP32/FP64.",
+    ]
+    (rerun_dir / "optional_checks.md").write_text("\n".join(lines) + "\n")
+
+
+def write_readme(runs, cases, fp16):
     valid = int(runs["is_valid"].sum())
     bad = int(runs["is_bad"].sum())
-    invalid = int((~runs["is_valid"]).sum())
-
+    tasks = ", ".join(sorted(runs["task_name"].dropna().unique()))
     lines = [
         "# Итоговые результаты",
         "",
-        "В этой папке лежат таблицы и графики, которые я использую в отчёте.",
-        "Сырые запуски не удалялись: они остались в старых папках `results_exp_*` и `final/`.",
-        "Для выводов я ориентируюсь не на лучший seed, а на медиану, разброс и пометки о плохих запусках.",
+        "Здесь лежит отчётный слой: таблицы и графики, собранные из уже готовых логов.",
+        "Сырые запуски не удалялись. Для выводов я смотрю на медиану, число seed и bad rate, а не на лучший отдельный запуск.",
         "",
-        "## Что лежит в этой папке",
+        "## Что лежит в папке",
         "",
-        "- `tables/` - таблицы после очистки логов.",
-        "- `figures/` - графики для отчёта.",
-        "- `selected_runs/` - выбранные запуски и пути к ним.",
-        "- `rerun_plan/` - что можно дозапустить, если нужны дополнительные картинки или MAE/RMSE.",
+        "- `tables/all_runs_normalized.csv` - все найденные run-папки;",
+        "- `tables/task_overview.csv` - общий обзор по задачам, параметрам и dtype;",
+        "- `tables/fp32_fp64_comparison.csv` - сравнение FP32 и FP64 внутри одинаковых настроек;",
+        "- `tables/report_cases.csv` - главная таблица для отчёта;",
+        "- `tables/fp16_summary.csv` - отдельный обзор FP16;",
+        "- `figures/` - основные графики;",
+        "- `rerun_plan/optional_checks.md` - небольшие проверки, если их захочется добавить.",
         "",
-        "## Сколько запусков найдено",
+        "## Сколько данных найдено",
         "",
-        f"- Всего уникальных run-папок: {len(runs)}.",
+        f"- Всего run-папок: {len(runs)}.",
         f"- Валидных запусков: {valid}.",
-        f"- Невалидных запусков: {invalid}.",
-        f"- Плохих или нестабильных по выбранному порогу: {bad}.",
+        f"- Плохих или нестабильных по порогу: {bad}.",
+        f"- Задачи: {tasks}.",
         "",
-        "`bad_runs.csv` включает и невалидные запуски, и валидные запуски с большой ошибкой. Поэтому число bad может пересекаться с числом valid.",
+        "## Как читать результаты",
         "",
-        "## Главные таблицы",
+        "Главный устойчивый положительный пример - Helmholtz m=12. Там есть по два валидных seed у FP32 и FP64, и FP64 лучше по медиане.",
+        "Convection beta=50 оставлен как предварительный hard-case: там только один seed, поэтому его нельзя использовать как главный устойчивый вывод.",
+        "Burgers получился смешанным: на части запусков FP32 и FP64 близки, на части FP32 лучше.",
+        "FP16 я не смешиваю с основной таблицей, потому что в этих запусках он часто даёт плохие или невалидные метрики.",
         "",
-        "- `tables/selected_cases.csv`",
-        "- `tables/grouped_by_dtype.csv`",
+        "## Основные файлы для отчёта",
+        "",
+        "- `tables/report_cases.csv`",
+        "- `tables/task_overview.csv`",
         "- `tables/fp32_fp64_comparison.csv`",
         "- `tables/fp16_summary.csv`",
-        "- `tables/run_quality.csv`",
-        "",
-        "## Главные графики",
-        "",
         "- `figures/report_best_l2_by_dtype.png`",
         "- `figures/report_fp64_fp32_ratio.png`",
         "- `figures/report_seed_scatter.png`",
-        "- `figures/report_convection_beta50_curves.png`",
-        "- `figures/report_helmholtz_m12_curves.png`",
+        "- `figures/report_task_overview.png`",
         "",
-        "## Основные кейсы",
-        "",
-        "- Helmholtz, m=12 - основной пример, где FP64 заметно лучше.",
-        "- Convection, beta=50 - потенциально сильный пример, но только один seed, поэтому вывод осторожный.",
-        "- Burgers, nu=0.002 - пример, где FP32 и FP64 близки.",
-        "- Burgers, nu=0.001 - пример, где FP64 не дал преимущества.",
-        "- Helmholtz, m=8 - случай с зависимостью от seed.",
-        "- FP16 - отдельный блок; в этих запусках часто нестабилен.",
-        "",
-        "## Что можно писать в отчёте",
-        "",
-        "- На Helmholtz при m=12 FP64 дал меньшую ошибку, чем FP32.",
-        "- На convection при beta=50 FP64 выглядит сильно лучше, но данных мало, поэтому этот кейс лучше подавать как сложный режим, а не как устойчивый результат.",
-        "- На Burgers преимущество FP64 не проявилось стабильно.",
-        "- FP16 в этих запусках часто давал плохую сходимость или невалидные метрики.",
-        "",
-        "## Что нельзя писать",
-        "",
-        "- FP64 всегда лучше.",
-        "- FP32 всегда ломается.",
-        "- FP16 полноценно сравнен как устойчивый вариант.",
-        "- Все результаты устойчивы по seed.",
-        "",
-        f"Отдельных FP16-групп в сводке: {len(fp16)}.",
+        f"FP16-групп в отдельной сводке: {len(fp16)}.",
     ]
     (out_dir / "README.md").write_text("\n".join(lines) + "\n")
 
 
-def write_missing_artifacts():
-    lines = [
-        "# Чего не хватает для аккуратного отчёта",
-        "",
-        "## Уже есть",
-        "",
-        "- таблицы best/final relative L2;",
-        "- сравнение FP32 и FP64;",
-        "- отдельная таблица по FP16;",
-        "- графики loss/L2 для выбранных кейсов;",
-        "- выбранные кейсы для отчёта.",
-        "",
-        "## Ещё желательно добавить",
-        "",
-        "- MAE/RMSE для выбранных convection-запусков;",
-        "- карты exact / prediction / error для convection beta=50;",
-        "- один selected check для FP16 на convection beta=50, если нужен пример неудачного запуска.",
-        "",
-        "## Большой перезапуск",
-        "",
-        "Большой перезапуск всех экспериментов не нужен.",
-        "",
-        "## Минимальные дозапуски",
-        "",
-        "- convection_beta50_fp32_seed0",
-        "- convection_beta50_fp64_seed0",
-        "- convection_beta50_fp16_seed0",
-        "",
-        "Перезапуск всех 33 runs для отчёта не нужен.",
-    ]
-    (rerun_dir / "missing_artifacts.md").write_text("\n".join(lines) + "\n")
-
-
-def sync_outputs():
-    for p in [table_dir, fig_dir, selected_dir, rerun_dir]:
-        p.mkdir(parents=True, exist_ok=True)
-
+def sync_base_tables():
     copies = [
         ("all_runs.csv", "all_runs_normalized.csv"),
         ("run_quality.csv", "run_quality.csv"),
@@ -255,33 +621,38 @@ def sync_outputs():
         ("bad_runs.csv", "bad_runs.csv"),
         ("valid_runs.csv", "valid_runs.csv"),
     ]
-    for src_name, dst_name in copies:
-        copy_file(clean_dir / "tables" / src_name, table_dir / dst_name)
-
-    copy_file(clean_dir / "selected_runs" / "selected_run_paths.csv", selected_dir / "selected_run_paths.csv")
-    make_selected_cases()
-
-    fig_copies = [
-        ("report_best_l2.png", "report_best_l2_by_dtype.png"),
-        ("report_ratio.png", "report_fp64_fp32_ratio.png"),
-        ("report_seed_scatter.png", "report_seed_scatter.png"),
-        ("curves_convection_beta50.png", "report_convection_beta50_curves.png"),
-        ("curves_helmholtz_m12.png", "report_helmholtz_m12_curves.png"),
-        ("report_best_l2.png", "fp32_fp64_median_best_l2.png"),
-        ("report_ratio.png", "fp64_over_fp32_ratio.png"),
-        ("report_seed_scatter.png", "seed_scatter_best_l2.png"),
-    ]
-    for src_name, dst_name in fig_copies:
-        copy_file(clean_dir / "figures" / src_name, fig_dir / dst_name)
-
-    write_report_readme()
-    write_missing_artifacts()
+    for src, dst in copies:
+        copy_file(clean_dir / "tables" / src, table_dir / dst)
 
 
 def main():
     ns = runpy.run_path(str(root / "scripts" / "build_report_results.py"))
-    ns["main"]()
-    sync_outputs()
+    with contextlib.redirect_stdout(io.StringIO()):
+        ns["main"]()
+
+    sync_base_tables()
+
+    runs = pd.read_csv(clean_dir / "tables" / "all_runs.csv")
+    comp = pd.read_csv(clean_dir / "tables" / "fp32_fp64_comparison.csv")
+    fp16 = pd.read_csv(clean_dir / "tables" / "fp16_summary.csv")
+
+    overview = task_overview(runs)
+    cases = make_report_cases(comp, overview, fp16, runs)
+
+    overview.to_csv(table_dir / "task_overview.csv", index=False)
+    cases.to_csv(table_dir / "report_cases.csv", index=False)
+    cases.to_csv(table_dir / "selected_cases.csv", index=False)
+
+    write_selected_md(cases)
+    make_figures(cases, comp, overview, runs)
+    write_optional_checks()
+    write_readme(runs, cases, fp16)
+
+    print(f"runs: {len(runs)}")
+    print(f"valid: {int(runs['is_valid'].sum())}")
+    print(f"bad: {int(runs['is_bad'].sum())}")
+    print(f"comparison rows: {len(comp)}")
+    print(f"report cases: {len(cases)}")
     print("report_results updated")
 
 

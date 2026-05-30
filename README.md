@@ -17,7 +17,7 @@
 - `report_results/tables` - итоговые таблицы.
 - `report_results/figures` - итоговые графики.
 - `report_results/selected_runs` - выбранные кейсы для отчёта.
-- `report_results/rerun_plan` - что ещё можно дозапустить при необходимости.
+- `report_results/rerun_plan/optional_checks.md` - небольшие проверки, если нужно усилить спорный кейс.
 - `results_exp_*` - старые запуски экспериментов.
 - `final/` - архив старых финальных запусков, не основной слой для чтения.
 
@@ -35,7 +35,7 @@ pip install -r requirements.txt
 jupyter notebook notebooks/results_summary.ipynb
 ```
 
-В ноутбуке есть итоговая таблица выбранных кейсов, сравнение FP32/FP64, отдельный блок про FP16, основные графики и короткие выводы после таблиц.
+В ноутбуке есть общий обзор всех найденных запусков, отдельные блоки по Heat, Burgers, Helmholtz, Convection и FP16, итоговые кейсы для отчёта и основные графики.
 
 ## Как пересобрать таблицы
 
@@ -47,19 +47,24 @@ python analyze_results.py
 
 ## Какие файлы использовать в отчёте
 
+- `report_results/tables/report_cases.csv`
+- `report_results/tables/task_overview.csv`
 - `report_results/tables/selected_cases.csv`
 - `report_results/tables/grouped_by_dtype.csv`
 - `report_results/tables/fp32_fp64_comparison.csv`
 - `report_results/tables/fp16_summary.csv`
+- `report_results/figures/report_task_overview.png`
 - `report_results/figures/report_best_l2_by_dtype.png`
 - `report_results/figures/report_fp64_fp32_ratio.png`
 - `report_results/figures/report_seed_scatter.png`
-- `report_results/figures/report_convection_beta50_curves.png`
+- `report_results/figures/report_convection_beta30_curves.png`
+- `report_results/figures/report_convection_beta50_check.png`
 - `report_results/figures/report_helmholtz_m12_curves.png`
 
 ## Замечания
 
 - Плохие seed не скрывались.
+- `convection beta=50` не используется как главный устойчивый вывод: там мало seed, поэтому он вынесен как кейс для проверки.
 - FP16 анализируется отдельно от основной таблицы FP32/FP64.
 - Вывод “FP64 всегда лучше” здесь не делается.
 - Часть старых папок оставлена как архив экспериментов.
