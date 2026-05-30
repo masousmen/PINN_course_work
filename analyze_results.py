@@ -33,13 +33,53 @@ def result_text(row, dtype):
     n = row.get(f"n_{dtype}", row.get(f"{dtype}_n_valid", ""))
     med = row.get(f"{dtype}_median_best_l2", float("nan"))
     bad = row.get(f"{dtype}_bad_rate", float("nan"))
-    return f"n={n}, median best L2={fmt_num(med)}, bad rate={fmt_num(bad)}"
+    return f"n={n}, медиана best L2={fmt_num(med)}, доля плохих={fmt_num(bad)}"
 
 
 def public_conclusion(x):
     if x in ["single_seed_hard_case", "seed_sensitive"]:
         return "unstable_or_seed_sensitive"
     return x
+
+
+def russian_conclusion(x):
+    names = {
+        "stable_fp64_better": "FP64 заметно лучше",
+        "moderate_fp64_better": "FP64 немного лучше",
+        "similar": "FP32 и FP64 близки",
+        "fp32_better": "FP32 лучше",
+        "unstable_or_seed_sensitive": "зависит от seed",
+        "fp16 failed or unstable": "FP16 нестабилен",
+    }
+    return names.get(str(x), str(x))
+
+
+def russian_confidence(x):
+    names = {
+        "strong": "сильная",
+        "medium": "средняя",
+        "weak_needs_rerun": "нужна проверка",
+    }
+    return names.get(str(x), str(x))
+
+
+def russian_why(row):
+    task = str(row.get("task_name", ""))
+    parameter = str(row.get("parameter", ""))
+    conclusion = str(row.get("conclusion", ""))
+    if task == "helmholtz1d" and parameter == "m=12":
+        return "Основной положительный пример: на этом режиме FP64 дал меньшую ошибку по медиане."
+    if task == "convection1d" and parameter == "beta=50":
+        return "Сложный режим: FP64 выглядит сильно лучше, но запусков мало, поэтому вывод осторожный."
+    if task == "burgers1d" and parameter == "nu=0.002":
+        return "Контрольный пример: FP32 и FP64 дали близкие ошибки."
+    if task == "burgers1d" and parameter == "nu=0.001":
+        return "Пример, где FP64 не дал преимущества."
+    if task == "helmholtz1d" and parameter == "m=8":
+        return "Пример с заметной зависимостью от seed."
+    if task == "fp16":
+        return "FP16 вынесен отдельно, потому что в этих запусках он часто давал плохие или невалидные метрики."
+    return conclusion
 
 
 def make_selected_cases():
@@ -54,7 +94,7 @@ def make_selected_cases():
             "parameter": row["parameter"],
             "case_title": row.get("case_title", row["case_id"]),
             "variant": row["variant"],
-            "why_selected": row["why_selected"],
+            "why_selected": russian_why(row),
             "fp32_result": "" if row["task_name"] == "fp16" else result_text(row, "fp32"),
             "fp64_result": "" if row["task_name"] == "fp16" else result_text(row, "fp64"),
             "conclusion": public_conclusion(row["conclusion"]),
@@ -65,6 +105,33 @@ def make_selected_cases():
         })
     selected = pd.DataFrame(rows)
     selected.to_csv(table_dir / "selected_cases.csv", index=False)
+    write_selected_markdown(selected)
+
+
+def write_selected_markdown(selected):
+    lines = ["# Выбранные кейсы", ""]
+    for _, row in selected.iterrows():
+        lines.append(f"## {row['case_title']}")
+        lines.append("")
+        lines.append(f"- задача: `{row['task_name']}`")
+        lines.append(f"- параметр: `{row['parameter']}`")
+        lines.append(f"- вариант: `{row['variant']}`")
+        lines.append(f"- почему выбран: {row['why_selected']}")
+        if str(row.get("fp32_result", "")).strip():
+            lines.append(f"- FP32: {row['fp32_result']}")
+        if str(row.get("fp64_result", "")).strip():
+            lines.append(f"- FP64: {row['fp64_result']}")
+        lines.append(f"- вывод: {russian_conclusion(row['conclusion'])}")
+        lines.append(f"- надёжность: {russian_confidence(row['confidence_label'])}")
+        src = str(row.get("source_runs", "")).strip()
+        if src and src.lower() != "nan":
+            lines.append("- исходные run-папки:")
+            for p in src.replace("|", ";").split(";"):
+                p = p.strip()
+                if p:
+                    lines.append(f"  - `{p}`")
+        lines.append("")
+    (selected_dir / "selected_cases.md").write_text("\n".join(lines) + "\n")
 
 
 def write_report_readme():
@@ -76,19 +143,29 @@ def write_report_readme():
     invalid = int((~runs["is_valid"]).sum())
 
     lines = [
-        "# Report results",
+        "# Итоговые результаты",
         "",
-        "These files are the cleaned output layer for the report.",
-        "They are rebuilt from real run folders with `summary.json` and `metrics.csv`; old aggregate CSV files are not used as run sources.",
+        "В этой папке лежат таблицы и графики, которые я использую в отчёте.",
+        "Сырые запуски не удалялись: они остались в старых папках `results_exp_*` и `final/`.",
+        "Для выводов я ориентируюсь не на лучший seed, а на медиану, разброс и пометки о плохих запусках.",
         "",
-        f"Unique run folders found: {len(runs)}.",
-        f"Valid runs: {valid}.",
-        f"Invalid runs: {invalid}.",
-        f"Bad or unstable by threshold: {bad}.",
+        "## Что лежит в этой папке",
         "",
-        "`bad_runs.csv` includes invalid runs and valid runs with high error, so bad and valid counts can overlap.",
+        "- `tables/` - таблицы после очистки логов.",
+        "- `figures/` - графики для отчёта.",
+        "- `selected_runs/` - выбранные запуски и пути к ним.",
+        "- `rerun_plan/` - что можно дозапустить, если нужны дополнительные картинки или MAE/RMSE.",
         "",
-        "## Main tables",
+        "## Сколько запусков найдено",
+        "",
+        f"- Всего уникальных run-папок: {len(runs)}.",
+        f"- Валидных запусков: {valid}.",
+        f"- Невалидных запусков: {invalid}.",
+        f"- Плохих или нестабильных по выбранному порогу: {bad}.",
+        "",
+        "`bad_runs.csv` включает и невалидные запуски, и валидные запуски с большой ошибкой. Поэтому число bad может пересекаться с числом valid.",
+        "",
+        "## Главные таблицы",
         "",
         "- `tables/selected_cases.csv`",
         "- `tables/grouped_by_dtype.csv`",
@@ -96,7 +173,7 @@ def write_report_readme():
         "- `tables/fp16_summary.csv`",
         "- `tables/run_quality.csv`",
         "",
-        "## Main figures",
+        "## Главные графики",
         "",
         "- `figures/report_best_l2_by_dtype.png`",
         "- `figures/report_fp64_fp32_ratio.png`",
@@ -104,60 +181,63 @@ def write_report_readme():
         "- `figures/report_convection_beta50_curves.png`",
         "- `figures/report_helmholtz_m12_curves.png`",
         "",
-        "## Selected cases",
+        "## Основные кейсы",
         "",
+        "- Helmholtz, m=12 - основной пример, где FP64 заметно лучше.",
+        "- Convection, beta=50 - потенциально сильный пример, но только один seed, поэтому вывод осторожный.",
+        "- Burgers, nu=0.002 - пример, где FP32 и FP64 близки.",
+        "- Burgers, nu=0.001 - пример, где FP64 не дал преимущества.",
+        "- Helmholtz, m=8 - случай с зависимостью от seed.",
+        "- FP16 - отдельный блок; в этих запусках часто нестабилен.",
+        "",
+        "## Что можно писать в отчёте",
+        "",
+        "- На Helmholtz при m=12 FP64 дал меньшую ошибку, чем FP32.",
+        "- На convection при beta=50 FP64 выглядит сильно лучше, но данных мало, поэтому этот кейс лучше подавать как сложный режим, а не как устойчивый результат.",
+        "- На Burgers преимущество FP64 не проявилось стабильно.",
+        "- FP16 в этих запусках часто давал плохую сходимость или невалидные метрики.",
+        "",
+        "## Что нельзя писать",
+        "",
+        "- FP64 всегда лучше.",
+        "- FP32 всегда ломается.",
+        "- FP16 полноценно сравнен как устойчивый вариант.",
+        "- Все результаты устойчивы по seed.",
+        "",
+        f"Отдельных FP16-групп в сводке: {len(fp16)}.",
     ]
-    for _, row in selected.iterrows():
-        lines.append(f"- `{row['case_title']}`: {row['conclusion']} ({row['confidence_label']})")
-    lines.extend([
-        "",
-        "## Report wording",
-        "",
-        "Can say:",
-        "- FP64 improves selected hard cases.",
-        "- FP64 is not uniformly better than FP32.",
-        "- FP16 is mostly unstable in these runs.",
-        "- Some cases are seed-sensitive.",
-        "",
-        "Should not say:",
-        "- FP64 always wins.",
-        "- FP32 fails everywhere.",
-        "- FP16 was fully evaluated as a stable baseline.",
-        "",
-        f"FP16 groups in the separate summary: {len(fp16)}.",
-    ])
     (out_dir / "README.md").write_text("\n".join(lines) + "\n")
 
 
 def write_missing_artifacts():
     lines = [
-        "# Missing artifacts",
+        "# Чего не хватает для аккуратного отчёта",
         "",
-        "## Already available",
+        "## Уже есть",
         "",
-        "- tables with best/final relative L2",
-        "- loss/L2 curves for selected cases",
-        "- FP32/FP64 comparison",
-        "- FP16 summary",
-        "- selected cases for the report",
+        "- таблицы best/final relative L2;",
+        "- сравнение FP32 и FP64;",
+        "- отдельная таблица по FP16;",
+        "- графики loss/L2 для выбранных кейсов;",
+        "- выбранные кейсы для отчёта.",
         "",
-        "## Still missing for a polished report",
+        "## Ещё желательно добавить",
         "",
-        "- MAE/RMSE for selected convection cases, if dense-grid metrics are needed",
-        "- exact/prediction/error maps for convection beta=50",
-        "- one FP16 selected check on convection beta=50, if a failure illustration is needed",
+        "- MAE/RMSE для выбранных convection-запусков;",
+        "- карты exact / prediction / error для convection beta=50;",
+        "- один selected check для FP16 на convection beta=50, если нужен пример неудачного запуска.",
         "",
-        "## Large rerun",
+        "## Большой перезапуск",
         "",
-        "Large rerun is not needed.",
+        "Большой перезапуск всех экспериментов не нужен.",
         "",
-        "## Minimal selected checks",
+        "## Минимальные дозапуски",
         "",
         "- convection_beta50_fp32_seed0",
         "- convection_beta50_fp64_seed0",
         "- convection_beta50_fp16_seed0",
         "",
-        "Do not rerun all 33 final runs for the report.",
+        "Перезапуск всех 33 runs для отчёта не нужен.",
     ]
     (rerun_dir / "missing_artifacts.md").write_text("\n".join(lines) + "\n")
 

@@ -1,16 +1,26 @@
-# Report results
+# Итоговые результаты
 
-These files are the cleaned output layer for the report.
-They are rebuilt from real run folders with `summary.json` and `metrics.csv`; old aggregate CSV files are not used as run sources.
+В этой папке лежат таблицы и графики, которые я использую в отчёте.
+Сырые запуски не удалялись: они остались в старых папках `results_exp_*` и `final/`.
+Для выводов я ориентируюсь не на лучший seed, а на медиану, разброс и пометки о плохих запусках.
 
-Unique run folders found: 439.
-Valid runs: 415.
-Invalid runs: 24.
-Bad or unstable by threshold: 240.
+## Что лежит в этой папке
 
-`bad_runs.csv` includes invalid runs and valid runs with high error, so bad and valid counts can overlap.
+- `tables/` - таблицы после очистки логов.
+- `figures/` - графики для отчёта.
+- `selected_runs/` - выбранные запуски и пути к ним.
+- `rerun_plan/` - что можно дозапустить, если нужны дополнительные картинки или MAE/RMSE.
 
-## Main tables
+## Сколько запусков найдено
+
+- Всего уникальных run-папок: 439.
+- Валидных запусков: 415.
+- Невалидных запусков: 24.
+- Плохих или нестабильных по выбранному порогу: 240.
+
+`bad_runs.csv` включает и невалидные запуски, и валидные запуски с большой ошибкой. Поэтому число bad может пересекаться с числом valid.
+
+## Главные таблицы
 
 - `tables/selected_cases.csv`
 - `tables/grouped_by_dtype.csv`
@@ -18,7 +28,7 @@ Bad or unstable by threshold: 240.
 - `tables/fp16_summary.csv`
 - `tables/run_quality.csv`
 
-## Main figures
+## Главные графики
 
 - `figures/report_best_l2_by_dtype.png`
 - `figures/report_fp64_fp32_ratio.png`
@@ -26,26 +36,27 @@ Bad or unstable by threshold: 240.
 - `figures/report_convection_beta50_curves.png`
 - `figures/report_helmholtz_m12_curves.png`
 
-## Selected cases
+## Основные кейсы
 
-- `Helmholtz, m=12`: stable_fp64_better (strong)
-- `Convection, beta=50`: unstable_or_seed_sensitive (weak_needs_rerun)
-- `Burgers, nu=0.002`: similar (strong)
-- `Burgers, nu=0.001`: fp32_better (strong)
-- `Helmholtz, m=8`: unstable_or_seed_sensitive (medium)
-- `FP16 summary`: fp16 failed or unstable (medium)
+- Helmholtz, m=12 - основной пример, где FP64 заметно лучше.
+- Convection, beta=50 - потенциально сильный пример, но только один seed, поэтому вывод осторожный.
+- Burgers, nu=0.002 - пример, где FP32 и FP64 близки.
+- Burgers, nu=0.001 - пример, где FP64 не дал преимущества.
+- Helmholtz, m=8 - случай с зависимостью от seed.
+- FP16 - отдельный блок; в этих запусках часто нестабилен.
 
-## Report wording
+## Что можно писать в отчёте
 
-Can say:
-- FP64 improves selected hard cases.
-- FP64 is not uniformly better than FP32.
-- FP16 is mostly unstable in these runs.
-- Some cases are seed-sensitive.
+- На Helmholtz при m=12 FP64 дал меньшую ошибку, чем FP32.
+- На convection при beta=50 FP64 выглядит сильно лучше, но данных мало, поэтому этот кейс лучше подавать как сложный режим, а не как устойчивый результат.
+- На Burgers преимущество FP64 не проявилось стабильно.
+- FP16 в этих запусках часто давал плохую сходимость или невалидные метрики.
 
-Should not say:
-- FP64 always wins.
-- FP32 fails everywhere.
-- FP16 was fully evaluated as a stable baseline.
+## Что нельзя писать
 
-FP16 groups in the separate summary: 12.
+- FP64 всегда лучше.
+- FP32 всегда ломается.
+- FP16 полноценно сравнен как устойчивый вариант.
+- Все результаты устойчивы по seed.
+
+Отдельных FP16-групп в сводке: 12.

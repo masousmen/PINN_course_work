@@ -1,11 +1,14 @@
-# Raw experiment archive
+# Архив сырых экспериментов
 
-The original experiment folders are kept in the repository root as `results_exp_*` and `final/`.
+Основные старые папки с экспериментами оставлены в корне репозитория:
 
-They are treated as archival data. The main files for reading and reporting are in:
+- `results_exp_*`
+- `final/`
+
+Я не переношу их целиком, чтобы не сломать пути в старых ноутбуках и таблицах. Для отчёта лучше смотреть не сюда, а в основной слой:
 
 - `report_results/tables`
 - `report_results/figures`
 - `report_results/README.md`
 
-The zip files from older final runs are stored in `experiments_raw/archive_zips/`.
+Zip-архивы старых финальных запусков лежат в `experiments_raw/archive_zips/`.

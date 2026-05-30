@@ -34,6 +34,29 @@ def write_text(p, lines):
     Path(p).write_text("\n".join(lines) + "\n")
 
 
+def ru_conclusion(x):
+    d = {
+        "stable_fp64_better": "FP64 заметно лучше",
+        "moderate_fp64_better": "FP64 немного лучше",
+        "similar": "FP32 и FP64 близки",
+        "fp32_better": "FP32 лучше",
+        "single_seed_hard_case": "один сильный seed, нужна проверка",
+        "seed_sensitive": "зависит от seed",
+        "insufficient_data": "не хватает данных",
+        "fp16 failed or unstable": "FP16 нестабилен",
+    }
+    return d.get(str(x), str(x))
+
+
+def ru_confidence(x):
+    d = {
+        "strong": "сильная",
+        "medium": "средняя",
+        "weak_needs_rerun": "нужна проверка",
+    }
+    return d.get(str(x), str(x))
+
+
 def to_num(x):
     if x is None:
         return np.nan
@@ -593,7 +616,7 @@ def pick_report_cases(comp, runs, fp16):
     stable = comp[comp["conclusion"] == "stable_fp64_better"].copy()
     m12 = stable[(stable["task_name"] == "helmholtz1d") & (stable["main_parameter_name"] == "m") & (stable["main_parameter_value"] == 12)]
     if len(m12):
-        add_selected(selected, m12.sort_values("fp64_over_fp32_median"), "main stable hard Helmholtz case")
+        add_selected(selected, m12.sort_values("fp64_over_fp32_median"), "основной устойчивый пример на Helmholtz")
     elif len(stable):
         add_selected(selected, stable.sort_values("fp64_over_fp32_median"), "stable fp64 better case")
 
@@ -605,7 +628,7 @@ def pick_report_cases(comp, runs, fp16):
     ].copy()
     if len(hard):
         hard["rank"] = hard["conclusion"].eq("single_seed_hard_case").astype(int)
-        add_selected(selected, hard.sort_values(["rank", "fp64_median_best_l2"], ascending=[False, True]), "hard case with promising fp64 result, but needs extra seeds")
+        add_selected(selected, hard.sort_values(["rank", "fp64_median_best_l2"], ascending=[False, True]), "сложный режим: FP64 выглядит лучше, но нужны дополнительные seed")
 
     similar = comp[
         (comp["task_name"] == "burgers1d")
@@ -617,7 +640,7 @@ def pick_report_cases(comp, runs, fp16):
         similar = comp[comp["conclusion"] == "similar"].copy()
     if len(similar):
         similar["dist"] = (similar["fp64_over_fp32_median"] - 1).abs()
-        add_selected(selected, similar.sort_values("dist"), "control case where fp64 is close to fp32")
+        add_selected(selected, similar.sort_values("dist"), "контрольный пример: FP64 близок к FP32")
 
     neg = comp[
         (comp["task_name"] == "burgers1d")
@@ -628,7 +651,7 @@ def pick_report_cases(comp, runs, fp16):
     if len(neg) == 0:
         neg = comp[comp["conclusion"] == "fp32_better"].copy()
     if len(neg):
-        add_selected(selected, neg.sort_values("fp64_over_fp32_median"), "negative case: fp64 is not uniformly better")
+        add_selected(selected, neg.sort_values("fp64_over_fp32_median"), "пример, где FP64 не дал преимущества")
 
     m8 = comp[
         (comp["task_name"] == "helmholtz1d")
@@ -637,14 +660,14 @@ def pick_report_cases(comp, runs, fp16):
         & (comp["conclusion"].isin(["seed_sensitive", "stable_fp64_better", "moderate_fp64_better"]))
     ].copy()
     if len(m8) and len(selected) < 5:
-        add_selected(selected, m8.sort_values("fp64_over_fp32_median"), "supporting Helmholtz case, treated carefully because seeds are mixed")
+        add_selected(selected, m8.sort_values("fp64_over_fp32_median"), "дополнительный Helmholtz-кейс, но seed дают смешанную картину")
 
     if len(selected) < 5:
         more = stable.sort_values("fp64_over_fp32_median")
         for _, row in more.iterrows():
             if len(selected) >= 5:
                 break
-            add_selected(selected, row, "additional stable fp64 better case")
+            add_selected(selected, row, "дополнительный устойчивый пример в пользу FP64")
 
     selected = selected[:5]
 
@@ -656,8 +679,8 @@ def pick_report_cases(comp, runs, fp16):
             "task_name": "fp16",
             "main_parameter_name": "summary",
             "main_parameter_value": 0.0,
-            "parameter": "all fp16 runs",
-            "variant": "separate",
+            "parameter": "все fp16-запуски",
+            "variant": "отдельно",
             "n_fp32": np.nan,
             "n_fp64": np.nan,
             "fp32_median_best_l2": np.nan,
@@ -667,9 +690,9 @@ def pick_report_cases(comp, runs, fp16):
             "fp64_bad_rate": np.nan,
             "conclusion": "fp16 failed or unstable",
             "confidence_label": "medium" if total else "weak_needs_rerun",
-            "why_selected": f"fp16 is separate from fp32/fp64: {bad}/{total} runs bad or invalid",
+            "why_selected": f"FP16 вынесен отдельно: {bad}/{total} запусков плохие или невалидные",
             "source_paths": "",
-            "case_title": "FP16 summary",
+            "case_title": "FP16",
             "case_key": "",
         })
 
@@ -839,18 +862,18 @@ def fp16_figure(fp16):
 
 
 def write_selected_notes(selected):
-    lines = ["# Report cases", ""]
+    lines = ["# Выбранные кейсы", ""]
     for _, row in selected.iterrows():
         lines.append(f"## {row['case_id']}")
         lines.append("")
-        lines.append(f"- task: {row['task_name']}")
-        lines.append(f"- parameter: {row['parameter']}")
-        lines.append(f"- variant: `{row['variant']}`")
-        lines.append(f"- conclusion: {row['conclusion']}")
-        lines.append(f"- confidence: {row['confidence_label']}")
-        lines.append(f"- why selected: {row['why_selected']}")
+        lines.append(f"- задача: {row['task_name']}")
+        lines.append(f"- параметр: {row['parameter']}")
+        lines.append(f"- вариант: `{row['variant']}`")
+        lines.append(f"- вывод: {ru_conclusion(row['conclusion'])}")
+        lines.append(f"- надёжность: {ru_confidence(row['confidence_label'])}")
+        lines.append(f"- почему выбран: {row['why_selected']}")
         if str(row.get("source_paths", "")).strip():
-            lines.append("- source runs:")
+            lines.append("- исходные run-папки:")
             for p in str(row["source_paths"]).split("; "):
                 if p:
                     lines.append(f"  - `{p}`")
@@ -1094,38 +1117,39 @@ if __name__ == "__main__":
 
 
 def write_missing(selected):
-    lines = ["# Missing artifacts and rerun plan", ""]
-    lines.append("Large rerun is not needed.")
+    lines = ["# Чего не хватает", ""]
+    lines.append("Большой перезапуск всех экспериментов не нужен.")
     lines.append("")
     strong = selected[selected["confidence_label"] == "strong"]
     weak = selected[selected["confidence_label"] == "weak_needs_rerun"]
-    lines.append("## Reliable selected cases")
+    lines.append("## Уже достаточно надёжные кейсы")
     if len(strong):
         for _, row in strong.iterrows():
-            lines.append(f"- `{row['case_id']}`: {row['conclusion']}")
+            lines.append(f"- `{row['case_id']}`: {ru_conclusion(row['conclusion'])}")
     else:
-        lines.append("- none")
+        lines.append("- таких кейсов не найдено")
     lines.append("")
-    lines.append("## Cases needing careful wording")
+    lines.append("## Кейсы, где нужен осторожный текст")
     if len(weak):
         for _, row in weak.iterrows():
-            lines.append(f"- `{row['case_id']}`: {row['conclusion']}; needs extra seeds before calling it stable")
+            lines.append(f"- `{row['case_id']}`: {ru_conclusion(row['conclusion'])}; нужны дополнительные seed, чтобы называть результат устойчивым")
     else:
-        lines.append("- none")
+        lines.append("- таких кейсов не найдено")
     lines.append("")
-    lines.append("## Missing MAE/RMSE and maps")
-    lines.append("- old convection beta=50 runs do not consistently contain dense-grid MAE/RMSE and solution/error maps")
+    lines.append("## Желательно добавить")
+    lines.append("- MAE/RMSE для convection beta=50 на плотной сетке")
+    lines.append("- карты exact / prediction / error для convection beta=50")
     lines.append("")
-    lines.append("## Selected checks")
-    lines.append("Run only if maps or extra verification are needed:")
+    lines.append("## Минимальные дозапуски")
+    lines.append("Запускать только если нужны карты или дополнительная проверка:")
     lines.append("`python report_results_clean/rerun_plan/run_selected_checks.py`")
     lines.append("")
-    lines.append("Planned selected checks:")
+    lines.append("Запланированные проверки:")
     lines.append("- convection_beta50_fp32_seed1")
     lines.append("- convection_beta50_fp64_seed1")
     lines.append("- convection_beta50_fp32_seed2")
     lines.append("- convection_beta50_fp64_seed2")
-    lines.append("- convection_beta50_fp16_seed0, skipped on CPU")
+    lines.append("- convection_beta50_fp16_seed0, на CPU пропускается")
     write_text(rerun_dir / "missing_artifacts.md", lines)
 
 
@@ -1134,35 +1158,35 @@ def write_readme(runs, selected, fp16):
     bad = int(runs["is_bad"].sum())
     valid = int(runs["is_valid"].sum())
     lines = [
-        "# Clean report results",
+        "# Чистая сводка результатов",
         "",
-        "This folder is rebuilt from real run folders only.",
-        "The old `report_results/` folder is treated as a failed draft and is not used as input.",
+        "Эта папка пересобирается только из настоящих run-папок с `summary.json` и `metrics.csv`.",
+        "Старая папка `report_results/` не используется как источник данных.",
         "",
-        "Scanned sources:",
+        "Просканированные источники:",
         "- `results_exp_*`",
         "- `final/final/`",
         "- `final/final 2/`",
-        "- `experiments_raw/`, if it contains unpacked runs",
+        "- `experiments_raw/`, если там есть распакованные run-папки",
         "",
-        f"Unique runs found: {len(runs)}.",
-        f"Valid runs: {valid}.",
-        f"Invalid runs: {invalid}.",
-        f"Bad runs by report threshold: {bad}.",
+        f"Уникальных запусков найдено: {len(runs)}.",
+        f"Валидных запусков: {valid}.",
+        f"Невалидных запусков: {invalid}.",
+        f"Плохих по выбранному порогу: {bad}.",
         "",
-        "`bad_runs.csv` includes invalid runs and valid-but-bad runs with high error.",
-        "That is why valid and bad counts can overlap.",
+        "`bad_runs.csv` включает невалидные запуски и валидные запуски с большой ошибкой.",
+        "Поэтому числа valid и bad могут пересекаться.",
         "",
-        "## Selected report cases",
+        "## Выбранные кейсы",
     ]
     for _, row in selected.iterrows():
-        lines.append(f"- `{row['case_id']}`: {row['conclusion']} ({row['confidence_label']})")
+        lines.append(f"- `{row['case_id']}`: {ru_conclusion(row['conclusion'])} ({ru_confidence(row['confidence_label'])})")
     lines.extend([
         "",
         "## FP16",
-        f"FP16 groups: {len(fp16)}. FP16 is summarized separately and is not mixed into the FP32/FP64 comparison.",
+        f"FP16-групп в сводке: {len(fp16)}. FP16 вынесен отдельно и не смешивается с основной таблицей FP32/FP64.",
         "",
-        "## Main tables",
+        "## Главные таблицы",
         "- `tables/all_runs.csv`",
         "- `tables/run_quality.csv`",
         "- `tables/grouped_by_dtype.csv`",
@@ -1170,13 +1194,13 @@ def write_readme(runs, selected, fp16):
         "- `tables/fp16_summary.csv`",
         "- `tables/report_cases.csv`",
         "",
-        "## Main figures",
+        "## Главные графики",
         "- `figures/report_best_l2.png`",
         "- `figures/report_ratio.png`",
         "- `figures/report_seed_scatter.png`",
         "- `figures/curves_<case_id>.png`",
         "",
-        "The conclusion should stay careful: fp64 helps in some selected hard settings, but it is not uniformly better.",
+        "Главный вывод должен оставаться аккуратным: FP64 помогает в некоторых сложных режимах, но не всегда лучше FP32.",
     ])
     write_text(out_dir / "README.md", lines)
 
