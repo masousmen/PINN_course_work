@@ -52,7 +52,7 @@ def ru_confidence(x):
     d = {
         "strong": "сильная",
         "medium": "средняя",
-        "needs_check": "нужна проверка",
+        "check_needed": "нужна проверка",
     }
     return d.get(str(x), str(x))
 
@@ -581,7 +581,7 @@ def add_selected(selected, row, why):
     for old in selected:
         if old["task_name"] == row["task_name"] and old["main_parameter_name"] == row["main_parameter_name"] and old["main_parameter_value"] == row["main_parameter_value"]:
             return
-    conf = "needs_check"
+    conf = "check_needed"
     if row["fp32_n_valid"] >= 2 and row["fp64_n_valid"] >= 2:
         if row["conclusion"] in ["stable_fp64_better", "similar", "fp32_better"]:
             conf = "strong"
@@ -689,7 +689,7 @@ def pick_report_cases(comp, runs, fp16):
             "fp32_bad_rate": np.nan,
             "fp64_bad_rate": np.nan,
             "conclusion": "fp16 failed or unstable",
-            "confidence_label": "medium" if total else "needs_check",
+            "confidence_label": "medium" if total else "check_needed",
             "why_selected": f"FP16 вынесен отдельно: {bad}/{total} запусков плохие или невалидные",
             "source_paths": "",
             "case_title": "FP16",
@@ -1121,7 +1121,7 @@ def write_missing(selected):
     lines.append("Большой перезапуск всех экспериментов не нужен.")
     lines.append("")
     strong = selected[selected["confidence_label"] == "strong"]
-    weak = selected[selected["confidence_label"] == "needs_check"]
+    weak = selected[selected["confidence_label"] == "check_needed"]
     lines.append("## Уже достаточно надёжные кейсы")
     if len(strong):
         for _, row in strong.iterrows():
@@ -1150,7 +1150,7 @@ def write_missing(selected):
     lines.append("- convection_beta50_fp32_seed2")
     lines.append("- convection_beta50_fp64_seed2")
     lines.append("- convection_beta50_fp16_seed0, на CPU пропускается")
-    write_text(rerun_dir / "missing_artifacts.md", lines)
+    write_text(rerun_dir / "extra_checks.md", lines)
 
 
 def write_readme(runs, selected, fp16):

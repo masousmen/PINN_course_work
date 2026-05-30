@@ -4,5 +4,3 @@ matplotlib
 torch
 jupyter
 ipython
-nbformat
-nbclient
