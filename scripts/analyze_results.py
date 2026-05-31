@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-
 ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = ROOT / "experiments_raw"
 OUT_DIR = ROOT / "report_results"
@@ -15,7 +14,6 @@ TABLE_DIR = OUT_DIR / "tables"
 FIG_DIR = OUT_DIR / "figures"
 
 BAD_L2_THRESHOLD = 0.8
-
 
 CASE_NAMES = {
     "heat_alpha01": "Heat, α=0.1",
@@ -33,7 +31,6 @@ CASE_NAMES = {
     "fp16_summary": "FP16 failure cases",
 }
 
-
 HELMHOLTZ_NAMES = {
     "helmholtz_m12_long": "m=12",
     "helmholtz_m12_rs": "m=12, rs",
@@ -44,7 +41,6 @@ HELMHOLTZ_NAMES = {
     "helmholtz_m11_rs": "m=11",
 }
 
-
 MAIN_HELMHOLTZ_IDS = {
     "helmholtz_m12_long",
     "helmholtz_m12_rs",
@@ -52,7 +48,6 @@ MAIN_HELMHOLTZ_IDS = {
     "helmholtz_m7_rs",
     "helmholtz_m11_rs",
 }
-
 
 TARGET_TABLES = {
     "all_runs_normalized.csv",
@@ -64,7 +59,6 @@ TARGET_TABLES = {
     "report_helmholtz_cases.csv",
     "report_diagnostic_cases.csv",
 }
-
 
 TARGET_FIGURES = {
     "report_main_best_l2_by_dtype.png",
@@ -79,10 +73,8 @@ TARGET_FIGURES = {
     "report_diagnostic_seed_sensitive.png",
 }
 
-
 def clean_text(text):
     return " ".join(str(text).replace("\n", " ").split())
-
 
 def to_float(x):
     if x is None:
@@ -97,13 +89,11 @@ def to_float(x):
     except Exception:
         return np.nan
 
-
 def to_int(x):
     val = to_float(x)
     if pd.isna(val):
         return np.nan
     return int(val)
-
 
 def fmt_num(x):
     val = to_float(x)
@@ -113,7 +103,6 @@ def fmt_num(x):
         return str(int(round(val)))
     return f"{val:.6g}"
 
-
 def same_num(a, b, eps=1e-9):
     a = to_float(a)
     b = to_float(b)
@@ -122,7 +111,6 @@ def same_num(a, b, eps=1e-9):
     if pd.isna(a) or pd.isna(b):
         return False
     return abs(a - b) < eps
-
 
 def flatten_dict(d, prefix=""):
     out = {}
@@ -140,13 +128,11 @@ def flatten_dict(d, prefix=""):
 
     return out
 
-
 def get_first(data, names, default=None):
     for name in names:
         if name in data and data[name] is not None:
             return data[name]
     return default
-
 
 def read_json(path):
     try:
@@ -154,7 +140,6 @@ def read_json(path):
             return json.load(f)
     except Exception:
         return None
-
 
 def parse_number(pattern, text):
     match = re.search(pattern, text)
@@ -165,14 +150,12 @@ def parse_number(pattern, text):
     raw = raw.replace("p", ".")
     return to_float(raw)
 
-
 def infer_dtype(text):
     text = text.lower()
     match = re.search(r"fp(16|32|64)", text)
     if match:
         return "fp" + match.group(1)
     return ""
-
 
 def infer_seed(text):
     text = text.lower()
@@ -189,7 +172,6 @@ def infer_seed(text):
 
     return np.nan
 
-
 def infer_task(text):
     text = text.lower()
 
@@ -203,7 +185,6 @@ def infer_task(text):
         return "heat1d"
 
     return ""
-
 
 def infer_parameter(task_name, text):
     text = text.lower()
@@ -227,7 +208,6 @@ def infer_parameter(task_name, text):
         return "alpha", value
 
     return "", np.nan
-
 
 def infer_variant(task_name, parameter_value, text):
     text = text.lower()
@@ -265,7 +245,6 @@ def infer_variant(task_name, parameter_value, text):
 
     return "unknown"
 
-
 def read_metrics(run_dir):
     path = run_dir / "metrics.csv"
     if not path.exists():
@@ -277,7 +256,6 @@ def read_metrics(run_dir):
         return None, path
 
     return df, path
-
 
 def find_metric_col(df, words):
     if df is None or df.empty:
@@ -296,7 +274,6 @@ def find_metric_col(df, words):
 
     return None
 
-
 def metric_min(df, words):
     col = find_metric_col(df, words)
     if col is None:
@@ -307,7 +284,6 @@ def metric_min(df, words):
         return np.nan
 
     return vals.min()
-
 
 def metric_last(df, words):
     col = find_metric_col(df, words)
@@ -320,10 +296,8 @@ def metric_last(df, words):
 
     return vals.iloc[-1]
 
-
 def get_setting(flat, names):
     return get_first(flat, names, np.nan)
-
 
 def run_from_summary(path):
     data = read_json(path)
@@ -462,7 +436,6 @@ def run_from_summary(path):
 
     return row
 
-
 def read_runs():
     files = list(RAW_DIR.rglob("summary.json"))
 
@@ -482,7 +455,6 @@ def read_runs():
 
     df = df.sort_values(["task_name", "main_parameter_value", "variant", "dtype", "seed"])
     return df.reset_index(drop=True)
-
 
 def make_case_key(row):
     keys = [
@@ -510,7 +482,6 @@ def make_case_key(row):
         parts.append(str(value))
 
     return "|".join(parts)
-
 
 def make_task_overview(runs):
     if runs.empty:
@@ -540,7 +511,6 @@ def make_task_overview(runs):
 
     df = pd.DataFrame(rows)
     return df.sort_values(["task_name", "main_parameter_value", "dtype"])
-
 
 def make_fp32_fp64_comparison(runs):
     if runs.empty:
@@ -597,7 +567,6 @@ def make_fp32_fp64_comparison(runs):
     df = pd.DataFrame(rows)
     return df.sort_values(["task_name", "main_parameter_value", "variant"])
 
-
 def pick_case(comp, task, par_name, par_value, variant=None):
     if comp.empty:
         return None
@@ -630,7 +599,6 @@ def pick_case(comp, task, par_name, par_value, variant=None):
 
     return cur.iloc[0]
 
-
 def case_id_from_row(row):
     task = row["task_name"]
     value = row["main_parameter_value"]
@@ -662,7 +630,6 @@ def case_id_from_row(row):
 
     return f"{task}_{fmt_num(value)}"
 
-
 def row_to_report(row, label, status, comment, case_id=None):
     if case_id is None:
         case_id = case_id_from_row(row)
@@ -692,7 +659,6 @@ def row_to_report(row, label, status, comment, case_id=None):
         "source_paths": "; ".join(src),
         "case_key": row.get("case_key", ""),
     }
-
 
 def make_heat_case(overview, runs):
     cur = overview[
@@ -732,7 +698,6 @@ def make_heat_case(overview, runs):
         "case_key": "",
     }
 
-
 def make_fp16_table(overview):
     if overview.empty:
         return pd.DataFrame()
@@ -755,7 +720,6 @@ def make_fp16_table(overview):
     ]
 
     return fp16[cols].sort_values(["task_name", "main_parameter_value"])
-
 
 def make_fp16_case(fp16_table):
     if fp16_table.empty:
@@ -784,7 +748,6 @@ def make_fp16_case(fp16_table):
         "case_key": "",
     }
 
-
 def make_helmholtz_cases(comp):
     specs = [
         (12, "helmholtz_resample_long", "helmholtz_m12_long", "главный положительный пример", "основной Helmholtz", "В этом запуске есть по два валидных seed; медиана FP64 заметно ниже медианы FP32."),
@@ -812,7 +775,6 @@ def make_helmholtz_cases(comp):
         rows.append(row_to_report(row, label, status, comment, case_id=case_id))
 
     return pd.DataFrame(rows)
-
 
 def make_report_tables(comp, overview, runs):
     main_rows = []
@@ -860,11 +822,9 @@ def make_report_tables(comp, overview, runs):
 
     return main, helm, diag, fp16_table
 
-
 def save_csv(df, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
-
 
 def archive_old_outputs():
     TABLE_DIR.mkdir(parents=True, exist_ok=True)
@@ -889,7 +849,6 @@ def archive_old_outputs():
                 dst.unlink()
             shutil.move(str(path), str(dst))
 
-
 def add_plot_names(df, mapping=None):
     if df.empty:
         return df
@@ -900,7 +859,6 @@ def add_plot_names(df, mapping=None):
 
     df["plot_name"] = df["case_id"].map(mapping).fillna(df["case_id"])
     return df
-
 
 def plot_main_bars(main):
     cur = main.dropna(subset=["fp32_median_best_l2", "fp64_median_best_l2"]).copy()
@@ -928,7 +886,6 @@ def plot_main_bars(main):
     fig.savefig(FIG_DIR / "report_main_best_l2_by_dtype.png", dpi=180)
     plt.close(fig)
 
-
 def plot_main_ratio(main):
     cur = main.dropna(subset=["ratio"]).copy()
     cur = cur[cur["case_id"] != "fp16_summary"]
@@ -952,7 +909,6 @@ def plot_main_ratio(main):
     fig.savefig(FIG_DIR / "report_main_fp64_fp32_ratio.png", dpi=180)
     plt.close(fig)
 
-
 def plot_helmholtz_ratio(helm):
     cur = helm.dropna(subset=["ratio"]).copy()
     cur = add_plot_names(cur, HELMHOLTZ_NAMES)
@@ -974,7 +930,6 @@ def plot_helmholtz_ratio(helm):
     fig.tight_layout()
     fig.savefig(FIG_DIR / "report_helmholtz_main_ratio.png", dpi=180)
     plt.close(fig)
-
 
 def plot_helmholtz_sweep(helm):
     cur = helm.dropna(subset=["ratio"]).copy()
@@ -1002,12 +957,10 @@ def plot_helmholtz_sweep(helm):
     fig.savefig(FIG_DIR / "report_helmholtz_rs_sweep.png", dpi=180)
     plt.close(fig)
 
-
 def split_sources(text):
     if not isinstance(text, str):
         return []
     return [x.strip() for x in text.split(";") if x.strip()]
-
 
 def runs_for_case(case, runs):
     paths = split_sources(case.get("source_paths", ""))
@@ -1015,7 +968,6 @@ def runs_for_case(case, runs):
         return pd.DataFrame()
 
     return runs[runs["source_path"].isin(paths)].copy()
-
 
 def plot_seed_scatter(cases, runs, file_name, title):
     if cases.empty:
@@ -1062,7 +1014,6 @@ def plot_seed_scatter(cases, runs, file_name, title):
     fig.savefig(FIG_DIR / file_name, dpi=180)
     plt.close(fig)
 
-
 def plot_burgers_summary(main):
     cur = main[main["case_id"].isin(["burgers_nu0p001", "burgers_nu0p002"])].copy()
     cur = cur.dropna(subset=["fp32_median_best_l2", "fp64_median_best_l2"])
@@ -1089,7 +1040,6 @@ def plot_burgers_summary(main):
     fig.savefig(FIG_DIR / "report_burgers_summary.png", dpi=180)
     plt.close(fig)
 
-
 def plot_fp16_summary(fp16_table):
     if fp16_table.empty:
         return
@@ -1111,14 +1061,12 @@ def plot_fp16_summary(fp16_table):
     fig.savefig(FIG_DIR / "report_fp16_summary.png", dpi=180)
     plt.close(fig)
 
-
 def metric_columns_for_plot(df):
     step_col = find_metric_col(df, {"step", "epoch", "iter", "iteration"})
     loss_col = find_metric_col(df, {"total_loss", "loss"})
     l2_col = find_metric_col(df, {"l2_error", "relative_l2_error", "rel_l2_error"})
 
     return step_col, loss_col, l2_col
-
 
 def plot_curves(case_id, cases, runs, file_name, title):
     row = cases[cases["case_id"] == case_id]
@@ -1195,7 +1143,6 @@ def plot_curves(case_id, cases, runs, file_name, title):
     fig.savefig(FIG_DIR / file_name, dpi=180)
     plt.close(fig)
 
-
 def make_figures(main, helm, diag, fp16_table, runs):
     FIG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1230,10 +1177,6 @@ def make_figures(main, helm, diag, fp16_table, runs):
     if not diag.empty:
         plot_seed_scatter(diag, runs, "report_diagnostic_seed_sensitive.png", "Diagnostic cases")
 
-    # beta=50 специально не рисую отдельной основной картинкой:
-    # там один seed и FP32 мог просто не начать сходиться.
-
-
 def main():
     TABLE_DIR.mkdir(parents=True, exist_ok=True)
     FIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -1267,7 +1210,6 @@ def main():
     print(f"Bad runs: {int(runs['is_bad'].sum())}")
     print(f"Tables: {TABLE_DIR}")
     print(f"Figures: {FIG_DIR}")
-
 
 if __name__ == "__main__":
     main()

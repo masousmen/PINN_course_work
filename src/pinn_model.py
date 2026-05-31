@@ -8,7 +8,6 @@ import json
 import random
 import time
 
-
 class PINN(nn.Module):
     def __init__(self, input_dim=2, num_layers=2, hid_size=32):
         super().__init__()
@@ -26,14 +25,12 @@ class PINN(nn.Module):
             inp = torch.cat(xs, dim=1)
         return self.model(inp)
 
-
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
 
 def get_dtype(type_name):
     if type_name == 'fp32' or type_name == 'float32':
@@ -46,22 +43,17 @@ def get_dtype(type_name):
         return torch.bfloat16
     raise ValueError("Unsupported dtype")
 
-
 def heat_1d_solution(x, t, alpha):
     return torch.exp(-torch.pi * torch.pi * alpha * t) * torch.sin(torch.pi * x)
-
 
 def convection_1d_solution(x, t, beta):
     return torch.sin(x - beta * t)
 
-
 def helmholtz_1d_solution(x, m):
     return torch.sin(m * torch.pi * x)
 
-
 def helmholtz_1d_force(x, m, lambda_val):
     return (lambda_val - (m * torch.pi) ** 2) * torch.sin(m * torch.pi * x)
-
 
 def helmholtz_model_value(model, x, alpha):
     u = model(x)
@@ -69,13 +61,10 @@ def helmholtz_model_value(model, x, alpha):
         u = x * (1 - x) * u
     return u
 
-
 def burgers_1d_initial(x):
     return -torch.sin(torch.pi * x)
 
-
 burgers_cache = {}
-
 
 def burgers_1d_reference(n, nu):
     key = (n, round(float(nu), 12))
@@ -119,7 +108,6 @@ def burgers_1d_reference(n, nu):
 
     burgers_cache[key] = (x, ts, vals)
     return burgers_cache[key]
-
 
 def make_points(n_collocation, n_ic, n_bc, task, point_mode=None):
     if task == 'heat1d':
@@ -224,7 +212,6 @@ def make_points(n_collocation, n_ic, n_bc, task, point_mode=None):
 
     raise ValueError("Unsupported task")
 
-
 def pinn_loss(model, points, alpha, task):
     if task == 'heat1d':
         x_pde = points['x_pde']
@@ -324,7 +311,6 @@ def pinn_loss(model, points, alpha, task):
 
     raise ValueError("Unsupported task")
 
-
 def l2_error(model, alpha, task):
     if task == 'helmholtz1d':
         n = max(1000, int(alpha["m"]) * 50)
@@ -366,7 +352,6 @@ def l2_error(model, alpha, task):
         err = torch.sqrt(torch.mean((pred - true) ** 2)) / torch.sqrt(torch.mean(true ** 2))
     model.train()
     return float(err.detach().cpu())
-
 
 def get_input_dim(task):
     if task == 'heat1d':
